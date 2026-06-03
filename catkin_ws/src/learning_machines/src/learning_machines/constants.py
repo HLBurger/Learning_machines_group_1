@@ -17,7 +17,7 @@ IR_indices = {
     "BACK_C" : 6,
 }
 
-FRONT_INDICES = [value for key, value in IR_indices.items() if key.startswith("FRONT")]
-BACK_INDICES = [value for key, value in IR_indices.items() if key.startswith("BACK")]
-LEFT_INDICES = [value for key, value in IR_indices.items() if key.endswith("_L", "_LL")]
-RIGHT_INDICES = [value for key, value in IR_indices.items() if key.endswith("_R", "_RR")]
+FRONT_INDICES = [value for key, value in IR_indices.items() if key.startswith('FRONT')]
+BACK_INDICES = [value for key, value in IR_indices.items() if key.startswith('BACK')]
+LEFT_INDICES = [value for key, value in IR_indices.items() if key.endswith('L')]
+RIGHT_INDICES = [value for key, value in IR_indices.items() if key.endswith('R')]

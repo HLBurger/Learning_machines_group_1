@@ -1,12 +1,13 @@
 from collections import deque
-from constants import *
+from .constants import *
 from robobo_interface import IRobobo, SimulationRobobo
+from .visualize_metrics import SimMetrics
 
 def front_blocked(IR_list):
     return(
-        IR_list[IR_indices.get("FRONT_R")] > IR_THRESHOLD or
-        IR_list[IR_indices.get("FRONT_L")] > IR_THRESHOLD or
-        IR_list[IR_indices.get("FRONT_C")] > IR_THRESHOLD
+        IR_list[IR_indices["FRONT_R"]] > IR_THRESHOLD or
+        IR_list[IR_indices["FRONT_L"]] > IR_THRESHOLD or
+        IR_list[IR_indices["FRONT_C"]] > IR_THRESHOLD
     )
 
 def side_clear_score(history: deque, side: str):
@@ -25,6 +26,8 @@ def side_clear_score(history: deque, side: str):
 
 def avoid_obstacles(rob: IRobobo, max_iter: int = 200):
 
+    metrics = SimMetrics()
+
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
 
@@ -32,17 +35,18 @@ def avoid_obstacles(rob: IRobobo, max_iter: int = 200):
 
     for step in range(max_iter):
         irs = rob.read_irs()
+        metrics.record(irs)
         ir_history.append(irs)
 
         print(f"[step: {step}]"
-              f"FrontC: {irs[IR_indices.get("FRONT_C")]}"
-              f"FrontL: {irs[IR_indices.get("FRONT_L")]}"
-              f"FrontLL: {irs[IR_indices.get("FRONT_LL")]}"
-              f"FrontR: {irs[IR_indices.get("FRONT_R")]}"
-              f"FrontRR: {irs[IR_indices.get("FRONT_RR")]}"
-              f"BACKC: {irs[IR_indices.get("BACK_C")]}"
-              f"BACKL: {irs[IR_indices.get("BACK_L")]}"
-              f"BACKR: {irs[IR_indices.get("BACK_R")]}"
+              f"FrontC: {irs[IR_indices['FRONT_C']]}"
+              f"FrontL: {irs[IR_indices['FRONT_L']]}"
+              f"FrontLL: {irs[IR_indices['FRONT_LL']]}"
+              f"FrontR: {irs[IR_indices['FRONT_R']]}"
+              f"FrontRR: {irs[IR_indices['FRONT_RR']]}"
+              f"BACKC: {irs[IR_indices['BACK_C']]}"
+              f"BACKL: {irs[IR_indices['BACK_L']]}"
+              f"BACKR: {irs[IR_indices['BACK_R']]}"
         )
 
         if front_blocked(irs):
@@ -66,7 +70,8 @@ def avoid_obstacles(rob: IRobobo, max_iter: int = 200):
             # Clear path, moving forwards
             rob.move_blocking(DRIVE_SPEED, DRIVE_SPEED, DRIVE_MS)
     
+    metrics.plot()
+    print(metrics.summary())
+
     if isinstance(rob, SimulationRobobo):
         rob.stop_simulation()
-
-    
