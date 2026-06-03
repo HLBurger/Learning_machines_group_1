@@ -1,0 +1,23 @@
+# Initial stats
+DRIVE_SPEED = 40
+TURN_SPEED = 40
+DRIVE_MS = 500
+TURN_MS = 600
+IR_THRESHOLD = 100           # > means an obstacle
+HISTORY_LEN = 10            # number of steps before to determine turning angle
+
+IR_indices = {
+    "FRONT_L" : 2,
+    "FRONT_R" : 3,
+    "FRONT_C" : 4,
+    "FRONT_RR" : 5,
+    "FRONT_LL" : 7,
+    "BACK_L" : 0,
+    "BACK_R" : 1,
+    "BACK_C" : 6,
+}
+
+FRONT_INDICES = [value for key, value in IR_indices.items() if key.startswith("FRONT")]
+BACK_INDICES = [value for key, value in IR_indices.items() if key.startswith("BACK")]
+LEFT_INDICES = [value for key, value in IR_indices.items() if key.endswith("_L", "_LL")]
+RIGHT_INDICES = [value for key, value in IR_indices.items() if key.endswith("_R", "_RR")]
