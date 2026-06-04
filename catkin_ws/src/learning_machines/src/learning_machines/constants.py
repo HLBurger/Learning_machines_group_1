@@ -1,8 +1,8 @@
 # Initial stats
-DRIVE_SPEED = 40
-TURN_SPEED = 40
-DRIVE_MS = 500
-TURN_MS = 600
+DRIVE_SPEED = 15  # Slower forward movement for better visibility
+TURN_SPEED = 20   # Slower turning
+DRIVE_MS = 500    # Longer duration between steps
+TURN_MS = 800     # Longer turning time
 IR_THRESHOLD = 100           # > means an obstacle
 HISTORY_LEN = 10            # number of steps before to determine turning angle
 

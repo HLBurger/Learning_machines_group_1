@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# replace localhost with the port you see on the smartphone
-export ROS_MASTER_URI="http://localhost:11311"
+# Detect mode from arguments
+MODE="$1"
+
+if [[ "$MODE" == "--hardware" ]]; then
+    # Hardware mode: connect to actual Robobo robot
+    export ROS_MASTER_URI="http://10.122.37.237:11311"
+    echo "Hardware mode: Connecting to Robobo at 10.122.37.237"
+else
+    # Simulation mode: use localhost
+    export ROS_MASTER_URI="http://localhost:11311"
+    echo "Simulation mode: Using localhost"
+fi
 
 # You want your local IP, usually starting with 192.168, following RFC1918
 # Windows powershell:
@@ -9,4 +19,4 @@ export ROS_MASTER_URI="http://localhost:11311"
 #    hostname -I | awk '{print $1}'
 # macOS:
 #    ipconfig getifaddr en1
-export COPPELIA_SIM_IP=192.168.178.124
+export COPPELIA_SIM_IP=130.37.201.134
