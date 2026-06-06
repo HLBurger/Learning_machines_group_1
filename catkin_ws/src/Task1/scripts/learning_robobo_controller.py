@@ -2,9 +2,8 @@
 import sys
 
 from robobo_interface import SimulationRobobo, HardwareRobobo
-from learning_machines.train_rl import train, validate
+from learning_machines.train_rl import train, validate, RESULTS_DIR
 from learning_machines.q_learning import QLearning
-from learning_machines.visualize_metrics import RLMetrics
 
 
 if __name__ == "__main__":
@@ -21,25 +20,21 @@ if __name__ == "__main__":
     mode = sys.argv[1]
 
     if mode == "--train-sim":
-        rob = SimulationRobobo(identifier=2)
+        rob = SimulationRobobo(identifier=1)
         agent, train_metrics = train(rob)
 
     elif mode == "--validate-sim":
-        rob   = SimulationRobobo(identifier=2)
+        label = sys.argv[2] if len(sys.argv) > 2 else "val1"
+        rob   = SimulationRobobo(identifier=1)
         agent = QLearning()
-        agent.load()
-        validate(rob, agent, train_metrics=None, n_runs=5)
+        agent.load(agent.load(str(RESULTS_DIR / "q_table_final.pkl")))
+        validate(rob, agent, train_metrics=None, n_runs=5, label=label)
 
-    elif mode == "--train-validate":
-        # train then immediately validate with comparison plots
-        rob = SimulationRobobo(identifier=2)
-        agent, train_metrics = train(rob)
-        validate(rob, agent, train_metrics=train_metrics, n_runs=5)
 
     elif mode == "--validate-hw":
         rob   = HardwareRobobo(camera=False)
         agent = QLearning()
-        agent.load()
+        agent.load(str(RESULTS_DIR / "q_table_best.pkl"))
         validate(rob, agent, train_metrics=None, n_runs=5)
 
     else:

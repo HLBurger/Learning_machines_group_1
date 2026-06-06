@@ -1,9 +1,11 @@
 import os
+import copy
 from pathlib import Path
 from robobo_interface import IRobobo, SimulationRobobo
 
 from .constants import (
     ACTIONS, N_EPISODES, MAX_STEPS, W_SPEED,
+    FRONT_INDICES, AVOIDANCE_BONUS,
 )
 from .q_learning import QLearning, discretise
 from .reward import compute_reward, front_blocked
@@ -55,7 +57,7 @@ def run_episode(
         # 4. Get position (sim only)
         position = rob.get_position() if isinstance(rob, SimulationRobobo) else None
 
-        # 5. Compute reward components
+        # 5. Compute reward
         prev_cell_count = len(visited_cells)
         reward, visited_cells = compute_reward(
             action, next_irs, prev_irs, position, visited_cells
@@ -66,23 +68,19 @@ def run_episode(
         if len(visited_cells) > prev_cell_count:
             metrics.record_new_cell()
 
-        # 7. Update Q-table (training only) — no done flag, always continues
+        # 7. Update Q-table (training only)
         if training:
             agent.update(state, action, reward, next_state, done=False)
 
-        # 8. Compute individual components for logging
-        max_speed   = 25.0
-        s_trans     = max((left + right) / (2 * max_speed), 0.0)
-        collision   = any(next_irs[i] > 100 for i in range(len(next_irs))
-                         if i in [2, 3, 4, 5, 7])
-
-        # avoidance: was near, now clear
-        from .constants import FRONT_INDICES, AVOIDANCE_BONUS
-        prev_v = max(prev_irs[i] for i in FRONT_INDICES) / 255.0
-        curr_v = max(next_irs[i] for i in FRONT_INDICES) / 255.0
+        # 8. Compute components for logging
+        max_speed = 25.0
+        s_trans   = max((left + right) / (2 * max_speed), 0.0)
+        collision = any(next_irs[i] > 100 for i in FRONT_INDICES)
+        prev_v    = max(prev_irs[i] for i in FRONT_INDICES) / 255.0
+        curr_v    = max(next_irs[i] for i in FRONT_INDICES) / 255.0
         avoidance = AVOIDANCE_BONUS if (prev_v > 0.4 and curr_v < 0.2) else 0.0
 
-        # 9. Log step metrics with components
+        # 9. Log step metrics
         metrics.record_step(
             action=action,
             irs=next_irs,
@@ -102,7 +100,7 @@ def run_episode(
     return total_reward
 
 
-def train(rob: IRobobo) -> QLearning:
+def train(rob: IRobobo) -> tuple:
     """Full training loop over N_EPISODES."""
     _ensure_dirs()
     agent   = QLearning()
@@ -112,12 +110,24 @@ def train(rob: IRobobo) -> QLearning:
     print(f"Initial epsilon: {agent.epsilon:.2f}")
     print(f"Results will be saved to: {RESULTS_DIR}")
 
+    best_reward    = float("-inf")
+    best_q_table   = None
+
     for ep in range(N_EPISODES):
         ep_reward = run_episode(rob, agent, metrics, training=True)
         cells     = metrics.cells_this_episode
 
         agent.decay_epsilon()
         metrics.end_episode(ep_reward)
+
+        # save best Q-table snapshot whenever we beat the best reward
+        # only consider episodes after epsilon has decayed enough (ep >= 20)
+        # to avoid saving a lucky random episode early on
+        if ep >= 20 and ep_reward > best_reward:
+            best_reward  = ep_reward
+            best_q_table = copy.deepcopy(agent.q_table)
+            agent.save(str(RESULTS_DIR / "q_table_best.pkl"))
+            print(f"  [ep {ep:>3}] New best reward: {best_reward:.2f} — q_table_best.pkl updated")
 
         if ep % 10 == 0:
             print(
@@ -127,19 +137,29 @@ def train(rob: IRobobo) -> QLearning:
                 f"cells visited: {cells}"
             )
 
-    # save Q-table and raw data
-    agent.save(str(RESULTS_DIR / "q_table.pkl"))
+    # save final Q-table (last episode) separately from best
+    agent.save(str(RESULTS_DIR / "q_table_final.pkl"))
     metrics.save_raw(str(RESULTS_DIR / "training_data.json"))
 
-    # generate all plots
+    # generate plots
     metrics.plot_training(save_path=str(FIGURES_DIR) + "/")
     RLMetrics.plot_epsilon_decay(metrics, save_path=str(FIGURES_DIR) + "/")
 
-    print("Training complete.")
+    print(f"Training complete.")
+    print(f"  Best reward achieved : {best_reward:.2f}  -> q_table_best.pkl")
+    print(f"  Final Q-table        -> q_table_final.pkl")
+
     return agent, metrics
 
 
-def validate(rob: IRobobo, agent: QLearning, train_metrics: RLMetrics = None, n_runs: int = 5) -> None:
+def validate(
+    rob: IRobobo,
+    agent: QLearning,
+    train_metrics: RLMetrics = None,
+    n_runs: int = 5,
+    label: str = "val1",
+) -> RLMetrics:
+    metrics = RLMetrics(label=label)
     """Run validation episodes with epsilon=0 (pure exploitation)."""
     _ensure_dirs()
     original_epsilon = agent.epsilon
@@ -153,13 +173,9 @@ def validate(rob: IRobobo, agent: QLearning, train_metrics: RLMetrics = None, n_
         metrics.end_episode(ep_reward)
         print(f"  Validation run {run + 1}/{n_runs} | reward: {ep_reward:.2f}")
 
-    # save raw validation data
-    metrics.save_raw(str(RESULTS_DIR / "validation_data.json"))
-
-    # generate validation plots
+    metrics.save_raw(str(RESULTS_DIR / f"validation_data_{label}.json"))
     metrics.plot_training(save_path=str(FIGURES_DIR) + "/")
 
-    # if training metrics provided, generate comparison plots
     if train_metrics is not None:
         RLMetrics.plot_training_vs_validation(
             train_metrics, metrics,
