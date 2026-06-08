@@ -8,8 +8,8 @@ from .constants import (
     FRONT_INDICES, AVOIDANCE_BONUS,
 )
 from .q_learning import QLearning, discretise
-from .reward import compute_reward, front_blocked
-from .visualize_metrics import RLMetrics
+from .reward_original import compute_reward, front_blocked
+from .visualize_metrics_original import RLMetrics
 
 RESULTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "results"
 FIGURES_DIR = RESULTS_DIR / "figures"
@@ -35,6 +35,7 @@ def run_episode(
         rob.play_simulation()
 
     visited_cells = set()
+    steps_since_new_cell = 0
     total_reward  = 0.0
 
     irs      = rob.read_irs()
@@ -60,13 +61,17 @@ def run_episode(
         # 5. Compute reward
         prev_cell_count = len(visited_cells)
         reward, visited_cells = compute_reward(
-            action, next_irs, prev_irs, position, visited_cells
+            action, next_irs, prev_irs, position, visited_cells,
+            steps_since_new_cell
         )
         total_reward += reward
 
         # 6. Track new cells
         if len(visited_cells) > prev_cell_count:
+            steps_since_new_cell = 0
             metrics.record_new_cell()
+        else:
+            steps_since_new_cell += 1
 
         # 7. Update Q-table (training only)
         if training:

@@ -20,6 +20,8 @@ IR_CLEAR = 100   # 0–100   → level 0 (clear)
 IR_NEAR  = 200   # 100–200 → level 1 (near)
                  # 200+    → level 2 (close)
 
+N_SENSORS = len(IR_indices)   # 8
+
 FRONT_INDICES = [v for k, v in IR_indices.items() if k.startswith("FRONT")]
 BACK_INDICES  = [v for k, v in IR_indices.items() if k.startswith("BACK")]
 LEFT_INDICES  = [v for k, v in IR_indices.items() if k.endswith("L")]
@@ -50,6 +52,14 @@ ACTION_NAMES = {
 N_ACTIONS = len(ACTIONS)
 
 # ─────────────────────────────────────────────
+# Action space continuous
+# ─────────────────────────────────────────────
+
+MAX_WHEEL_SPEED = 25.0
+MOVE_DURATION = 300
+
+
+# ─────────────────────────────────────────────
 # Q-learning hyperparameters
 # ─────────────────────────────────────────────
 ALPHA        = 0.1    # learning rate
@@ -60,6 +70,24 @@ EPSILON_DECAY = 0.9   # decay per episode
 
 N_EPISODES   = 100    # total training episodes
 MAX_STEPS    = 100    # max steps per episode
+
+# ─────────────────────────────────────────────
+# TD3 hyperparameters
+# ─────────────────────────────────────────────
+TD3_TOTAL_TIMESTEPS  = 5_000   # total training steps
+TD3_LEARNING_STARTS  = 1_000    # random exploration steps
+TD3_LEARNING_RATE    = 3e-4
+TD3_BATCH_SIZE       = 256
+TD3_BUFFER_SIZE      = 100_000  
+TD3_TRAIN_FREQ       = 1        # update every step
+TD3_GRADIENT_STEPS   = 1
+TD3_ACTION_NOISE_STD = 0.15     # Gaussian std on action (for better generalization)
+TD3_GAMMA            = 0.99     # Standard gamma value
+TD3_TAU              = 0.005    # soft update coefficient
+TD3_POLICY_DELAY     = 2        # actor updated every N critic updates
+TD3_MAX_STEPS        = 100      # max steps per episode
+
+OBS_DIM = 20
 
 # ─────────────────────────────────────────────
 # Reward function weights
