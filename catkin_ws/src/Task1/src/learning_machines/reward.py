@@ -10,7 +10,7 @@ import numpy as np
 from .constants import (
     ACTIONS, FRONT_INDICES, BACK_INDICES, LEFT_INDICES, RIGHT_INDICES,
     IR_THRESHOLD, IR_NEAR,
-    W_SPEED, W_ROTATION, W_PROXIMITY,
+    W_SPEED, W_ROTATION, W_PROXIMITY, W_REPETITION,
     EXPLORATION_BONUS, AVOIDANCE_BONUS,
     COLLISION_PENALTY,
     GRID_SIZE, MAX_WHEEL_SPEED,
@@ -113,6 +113,7 @@ def compute_reward(
 
 def compute_reward_continuous(
     action: np.ndarray,
+    prev_action: np.ndarray,
     irs: list,
     prev_irs: list,
     position,
@@ -148,25 +149,34 @@ def compute_reward_continuous(
     # ── 3. Front proximity ────────────────────────────────────────────────────
     v_front      = _normalise_ir(irs, FRONT_INDICES)
     prev_v_front = _normalise_ir(prev_irs, FRONT_INDICES)
-    
 
-    # ── 6. Collision ──────────────────────────────────────────────────────────
+    # ── 4. Back proximity ────────────────────────────────────────────────────
+    v_back      = _normalise_ir(irs, BACK_INDICES)
+    prev_v_back = _normalise_ir(prev_irs, BACK_INDICES)
+    
+    # ── 5. Delta action ───────────────────────────────────────────────────────
+    action_change = np.linalg.norm(
+        action - prev_action
+    )
+
+    # ── 5. Collision ──────────────────────────────────────────────────────────
     front_collision = any(irs[i] > IR_THRESHOLD for i in FRONT_INDICES)
     back_collision = any(irs[i] > IR_THRESHOLD for i in BACK_INDICES)
 
-    # ── 7. Avoidance bonus ────────────────────────────────────────────────────
+    # ── 6. Avoidance bonus ────────────────────────────────────────────────────
     was_near  = prev_v_front > 0.4
     is_clear  = v_front < 0.2
     avoidance = AVOIDANCE_BONUS if (was_near and is_clear) else 0.0
 
-    # ── 9. Exploration bonus ──────────────────────────────────────────────────
+    # ── 7. Exploration bonus ──────────────────────────────────────────────────
     exploration, visited_cells = _exploration_bonus(position, visited_cells)
 
-    # ── 11. Combine ───────────────────────────────────────────────────────────
+    # ── 8. Combine ───────────────────────────────────────────────────────────
     components = dict(
         speed          = W_SPEED        * s_trans,
         rotation       = W_ROTATION     * (1.0 - s_rot),
-        proximity      = W_PROXIMITY    * (1.0 - v_front),
+        proximity      = -W_PROXIMITY   * max(v_front, v_back),
+        delta_action   = -W_REPETITION * ((1.0 - action_change) / 2),
         avoidance      = avoidance,
         exploration    = exploration,
         front_collision = COLLISION_PENALTY if front_collision else 0.0,

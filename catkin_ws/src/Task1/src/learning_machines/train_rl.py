@@ -9,7 +9,7 @@ from .constants import (
 )
 from .q_learning import QLearning, discretise
 from .reward_original import compute_reward, front_blocked
-from .visualize_metrics_original import RLMetrics
+from .visualize_metrics_qlearning import RLMetrics
 
 RESULTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "results"
 FIGURES_DIR = RESULTS_DIR / "figures"

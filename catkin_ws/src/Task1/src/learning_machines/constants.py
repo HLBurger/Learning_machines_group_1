@@ -92,10 +92,11 @@ OBS_DIM = 20
 # ─────────────────────────────────────────────
 # Reward function weights
 # ─────────────────────────────────────────────
-W_SPEED       = 0.4   # weight for forward speed reward
-W_ROTATION    = 0.3   # weight for penalising spinning
-W_PROXIMITY   = 0.3   # weight for penalising obstacle proximity
-EXPLORATION_BONUS  = 0.3   # reward for visiting a new grid cell
-AVOIDANCE_BONUS = 0.5      # reward for escaping a near-obstacle situation
+W_SPEED       = 0.6   # weight for forward speed reward
+W_ROTATION    = 0.1   # weight for penalising spinning
+W_PROXIMITY   = 0.5   # weight for penalising obstacle proximity
+W_REPETITION  = 0.5     # weight for repetative behavior
+EXPLORATION_BONUS  = 0.8   # reward for visiting a new grid cell
+AVOIDANCE_BONUS = 0.2      # reward for escaping a near-obstacle situation
 COLLISION_PENALTY  = -1.0  # hard penalty for collision
 GRID_SIZE          = 0.2   # metres per grid cell for coverage tracking

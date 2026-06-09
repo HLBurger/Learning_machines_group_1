@@ -122,6 +122,7 @@ class RoboboEnv(gym.Env):
 
         reward, self._visited_cells, info = compute_reward_continuous(
             action,
+            self._last_action,
             curr_irs,
             self._prev_irs,
             position,

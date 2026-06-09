@@ -24,7 +24,7 @@ from .constants import (
     TD3_ACTION_NOISE_STD, TD3_GAMMA, TD3_TAU, TD3_POLICY_DELAY,
     TD3_MAX_STEPS,
 )
-
+from .visualize_metrics_td3 import TD3Metrics, TD3MetricsCallback
 
 RESULTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "results"
 FIGURES_DIR = RESULTS_DIR / "figures"
@@ -36,142 +36,6 @@ def _ensure_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Metrics container (mirrors RLMetrics interface for visualize_metrics.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TD3Metrics:
-    """
-    Lightweight metrics tracker compatible with the existing RLMetrics plots.
-    Episode data is appended by the SB3 callback during training.
-    """
-
-    def __init__(self, label: str = "TD3_Training"):
-        self.label = label
-
-        self.episode_rewards    = []
-        self.episode_steps      = []
-        self.episode_cells      = []
-        self.episode_speeds     = []
-        self.episode_collisions = []
-        self.episode_avoidances = []
-
-        # filled by callback
-        self._step_rewards     = []
-        self._step_speeds      = []
-        self._step_collisions  = []
-        self._step_avoidances  = []
-        self.cells_this_episode = 0
-        self.epsilon_history   = []   # not used by TD3, kept for API compat
-
-    def record_step(self, reward, speed, collision, avoidance):
-        self._step_rewards.append(reward)
-        self._step_speeds.append(speed)
-        self._step_collisions.append(float(collision))
-        self._step_avoidances.append(avoidance)
-
-    def record_new_cell(self):
-        self.cells_this_episode += 1
-
-    def end_episode(self, total_reward: float):
-        self.episode_rewards.append(total_reward)
-        self.episode_steps.append(len(self._step_rewards))
-        self.episode_cells.append(self.cells_this_episode)
-        self.episode_speeds.append(
-            float(np.mean(self._step_speeds)) if self._step_speeds else 0.0
-        )
-        self.episode_collisions.append(
-            float(np.mean(self._step_collisions)) if self._step_collisions else 0.0
-        )
-        self.episode_avoidances.append(
-            float(np.sum(self._step_avoidances)) if self._step_avoidances else 0.0
-        )
-        self._step_rewards     = []
-        self._step_speeds      = []
-        self._step_collisions  = []
-        self._step_avoidances  = []
-        self.cells_this_episode = 0
-
-    def save_raw(self, path: str) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        data = {
-            "label"              : self.label,
-            "episode_rewards"    : self.episode_rewards,
-            "episode_steps"      : self.episode_steps,
-            "episode_cells"      : self.episode_cells,
-            "episode_speeds"     : self.episode_speeds,
-            "episode_collisions" : self.episode_collisions,
-            "episode_avoidances" : self.episode_avoidances,
-        }
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-        print(f"Raw metrics saved -> {path}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SB3 callback — records per-episode metrics and saves checkpoints
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TD3MetricsCallback(BaseCallback):
-    """
-    SB3 callback that:
-    - Captures per-step info dicts from the environment.
-    - Aggregates them into TD3Metrics episode summaries.
-    - Saves a model checkpoint whenever a new best episode reward is set.
-    """
-
-    def __init__(self, metrics: TD3Metrics, save_dir: Path, verbose: int = 1):
-        super().__init__(verbose)
-        self.metrics      = metrics
-        self.save_dir     = save_dir
-        self.best_reward  = float("-inf")
-        self._ep_reward   = 0.0
-        self._ep_step     = 0
-
-    def _on_step(self) -> bool:
-        # SB3 stores the most recent info dict in self.locals["infos"]
-        info   = self.locals["infos"][0]
-        reward = self.locals["rewards"][0]
-        done   = self.locals["dones"][0]
-
-        self._ep_reward += reward
-        self._ep_step   += 1
-
-        # record step-level data
-        speed     = float(info.get("s_trans", 0.0))
-        collision = bool(info.get("collision", False))
-        avoidance = float(info.get("avoidance", 0.0))
-        self.metrics.record_step(reward, speed, collision, avoidance)
-
-        if bool(info.get("cells_visited", 0)) > self.metrics.cells_this_episode:
-            self.metrics.record_new_cell()
-
-        if done:
-            self.metrics.end_episode(self._ep_reward)
-
-            ep_num = len(self.metrics.episode_rewards)
-            if self.verbose and ep_num % 10 == 0:
-                print(
-                    f"  [ep {ep_num:>4}] "
-                    f"reward: {self._ep_reward:>7.2f} | "
-                    f"steps: {self._ep_step} | "
-                    f"cells: {self.metrics.episode_cells[-1]}"
-                )
-
-            # checkpoint best model (skip first 5 episodes of random warmup)
-            if ep_num > 5 and self._ep_reward > self.best_reward:
-                self.best_reward = self._ep_reward
-                self.model.save(str(self.save_dir / "td3_best"))
-                if self.verbose:
-                    print(
-                        f"  → New best reward {self.best_reward:.2f} "
-                        f"— td3_best saved"
-                    )
-
-            self._ep_reward = 0.0
-            self._ep_step   = 0
-
-        return True   # returning False would stop training
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,7 +96,7 @@ def train_td3(rob: IRobobo) -> tuple:
     # ── Save final model and metrics ──────────────────────────────────────────
     model.save(str(MODELS_DIR / "td3_final"))
     metrics.save_raw(str(RESULTS_DIR / "td3_training_data.json"))
-
+    metrics.plot_training(save_path=str(FIGURES_DIR) + "/")
     print(f"\nTraining complete.")
     print(f"  Best reward   : {callback.best_reward:.2f} → models/td3_best")
     print(f"  Final model   : models/td3_final")
@@ -283,7 +147,7 @@ def validate_td3(
             obs, reward, done, info = env.step(action)
 
             speed     = float(info.get("s_trans", 0.0))
-            collision = bool(info.get("collision", False))
+            collision = bool(info.get("front_collision", False))
             avoidance = float(info.get("avoidance", 0.0))
             metrics.record_step(reward, speed, collision, avoidance)
 
@@ -297,4 +161,13 @@ def validate_td3(
 
     metrics.save_raw(str(RESULTS_DIR / f"td3_validation_{label}.json"))
     env.close()
+
+    train_metrics = TD3Metrics.load_raw(str(RESULTS_DIR / "td3_training_data.json"))
+    val_metrics   = TD3Metrics.load_raw(str(RESULTS_DIR / f"td3_validation_{label}.json"))
+    
+
+    train_metrics.plot_training(save_path=FIGURES_DIR)
+    TD3Metrics.plot_training_vs_validation(train_metrics, val_metrics, save_path=FIGURES_DIR)
+    TD3Metrics.plot_boxplot(train_metrics, val_metrics, save_path=FIGURES_DIR)
+
     return metrics
