@@ -4,7 +4,7 @@ MODE="$1"
 
 if [[ "$MODE" == "--hardware" ]]; then
     # Hardware mode: connect to actual Robobo robot
-    export ROS_MASTER_URI="http://10.122.37.237:11311"
+    export ROS_MASTER_URI="http://192.168.86.203:11311"
     echo "Hardware mode: Connecting to Robobo at 10.122.37.237"
 else
     # Simulation mode: use localhost
@@ -19,4 +19,4 @@ fi
 #    hostname -I | awk '{print $1}'
 # macOS:
 #    ipconfig getifaddr en1
-export COPPELIA_SIM_IP=192.168.0.43
+export COPPELIA_SIM_IP="192.168.86.75"
