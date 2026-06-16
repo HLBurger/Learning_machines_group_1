@@ -8,7 +8,6 @@ from .constants_sac import (
     EXPLORATION_BONUS,
     COLLISION_PENALTY,
     AVOIDANCE_BONUS,
-    GRID_SIZE,
     MAX_WHEEL_SPEED,
 )
 
@@ -18,26 +17,27 @@ def compute_reward(
     right_speed: float,
     irs: list,
     prev_irs: list,
-    position,
-    visited_cells: set,
+    odom_map,           # OdometryMap instance
+    sim_position=None,  # simulation Position object, or None
 ) -> tuple:
     """
-    Compute the reward for one SAC step.
+    Compute the reward for one SAC step and advance the odometry map.
 
     Parameters
     ----------
-    left_speed    : float — left wheel speed chosen by SAC
-    right_speed   : float — right wheel speed chosen by SAC
-    irs           : list  — current raw IR sensor readings, length 8
-    prev_irs      : list  — previous step IR readings, length 8
-    position      : Position object with .x and .y, or None
-    visited_cells : set   — grid cells already visited this episode
+    left_speed    : float        — left wheel speed chosen by SAC
+    right_speed   : float        — right wheel speed chosen by SAC
+    irs           : list         — current raw IR sensor readings, length 8
+    prev_irs      : list         — previous step IR readings, length 8
+    odom_map      : OdometryMap  — live map; will be mutated in-place
+    sim_position  : object with .x .y, or None
+                    When provided (simulation only), used for ground-truth XY.
 
     Returns
     -------
-    reward        : float — scalar reward for this step
-    visited_cells : set   — updated visited cells
-    collision     : bool  — whether robot collided / should end episode
+    reward    : float — scalar reward for this step
+    new_cell  : bool  — True if the agent entered a previously-unseen cell
+    collision : bool  — whether the robot collided
     """
 
     max_speed = float(MAX_WHEEL_SPEED)
@@ -46,12 +46,11 @@ def compute_reward(
     s_trans = (left_speed + right_speed) / (2.0 * max_speed)
     s_trans = max(s_trans, 0.0)
 
-    # 2. Rotation score, normalized 0 -> 1
-    # High if robot drives straight, low if it spins.
+    # 2. Rotation penalty, 0 (straight) -> 1 (full spin)
     s_rot = abs(left_speed - right_speed) / (2.0 * max_speed)
     s_rot = min(s_rot, 1.0)
 
-    # 3. Proximity score
+    # 3. Proximity score (0 = nothing near, 1 = very close)
     front_vals = [irs[i] for i in FRONT_INDICES]
     v_sens = max(front_vals) / 255.0
     v_sens = min(max(v_sens, 0.0), 1.0)
@@ -59,26 +58,23 @@ def compute_reward(
     # 4. Collision check
     collision = any(irs[i] > IR_COLLISION_THRESHOLD for i in FRONT_INDICES)
 
-    # 5. Avoidance bonus
+    # 5. Avoidance bonus (was near → now clear)
     prev_front_vals = [prev_irs[i] for i in FRONT_INDICES]
     prev_v_sens = max(prev_front_vals) / 255.0
     prev_v_sens = min(max(prev_v_sens, 0.0), 1.0)
 
-    was_near = prev_v_sens > 0.4
-    is_clear = v_sens < 0.2
+    was_near  = prev_v_sens > 0.4
+    is_clear  = v_sens < 0.2
     avoidance = AVOIDANCE_BONUS if (was_near and is_clear) else 0.0
 
-    # 6. Exploration bonus
-    exploration = 0.0
-    if position is not None:
-        cell = (int(position.x / GRID_SIZE), int(position.y / GRID_SIZE))
-        if cell not in visited_cells:
-            exploration = EXPLORATION_BONUS
-            visited_cells.add(cell)
+    # 6. Odometry map update + exploration bonus
+    #    OdometryMap.update() returns True when a new cell is entered.
+    new_cell  = odom_map.update(left_speed, right_speed, sim_position=sim_position)
+    exploration = EXPLORATION_BONUS if new_cell else 0.0
 
     # 7. Combine
     reward = (
-        W_SPEED * s_trans
+        W_SPEED     *  s_trans
         + W_ROTATION * (1.0 - s_rot)
         + W_PROXIMITY * (1.0 - v_sens)
         + avoidance
@@ -86,9 +82,9 @@ def compute_reward(
         + (COLLISION_PENALTY if collision else 0.0)
     )
 
-    return reward, visited_cells, collision
+    return reward, new_cell, collision
 
 
 def front_blocked(irs: list) -> bool:
-    """True if any front sensor exceeds IR_NEAR."""
+    """True if any front sensor exceeds IR_NEAR_THRESHOLD."""
     return any(irs[i] > IR_NEAR_THRESHOLD for i in FRONT_INDICES)
