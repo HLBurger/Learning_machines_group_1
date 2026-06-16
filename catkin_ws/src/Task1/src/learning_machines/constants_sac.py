@@ -17,7 +17,30 @@ BACK_INDICES  = [v for k, v in IR_indices.items() if k.startswith("BACK")]
 LEFT_INDICES  = [v for k, v in IR_indices.items() if k.endswith("L")]
 RIGHT_INDICES = [v for k, v in IR_indices.items() if k.endswith("R")]
 
-STATE_DIM = len(IR_indices)
+# ─────────────────────────────────────────────
+# Occupancy map & odometry
+# ─────────────────────────────────────────────
+# Physical grid resolution (metres per cell)
+# GRID_SIZE is already defined below, but we need it here for STATE_DIM,
+# so define it once at the top and remove the duplicate further down.
+GRID_SIZE = 0.2
+
+# Global map size in cells (robot starts at the centre)
+MAP_WIDTH_CELLS  = 100   # 100 * 0.20 m = 20 m wide
+MAP_HEIGHT_CELLS = 100   # 100 * 0.20 m = 20 m tall
+
+# Local observation window extracted around the agent (must be odd)
+LOCAL_MAP_WINDOW = 5    
+
+# Robobo wheel-base in metres (distance between wheels)
+WHEEL_BASE = 0.12        # 12 cm
+
+# Observation vector layout:
+#   [IR sensors (8)] + [pose (4: x_n, y_n, cos θ, sin θ)] + [local map (LOCAL_MAP_WINDOW²)]
+IR_STATE_DIM  = len(IR_indices)
+POSE_DIM      = 4
+MAP_OBS_DIM   = LOCAL_MAP_WINDOW * LOCAL_MAP_WINDOW   # 25
+STATE_DIM     = IR_STATE_DIM + POSE_DIM + MAP_OBS_DIM # 8 + 4 + 25 = 37
 
 IR_MAX_VALUE = 400
 IR_COLLISION_THRESHOLD = 120
@@ -98,8 +121,6 @@ W_MOTOR_POWER = 0.01
 EXPLORATION_BONUS = 0.8
 AVOIDANCE_BONUS = 0.3
 COLLISION_PENALTY = -1.0
-
-GRID_SIZE = 0.2
 
 
 # ─────────────────────────────────────────────

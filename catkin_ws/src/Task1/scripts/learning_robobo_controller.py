@@ -13,6 +13,9 @@ from learning_machines.train_SAC import RESULTS_DIR as RESULTS_DIR_SAC
 from learning_machines.sac import SAC_RL
 
 
+import numpy as np
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise ValueError(
@@ -56,7 +59,7 @@ if __name__ == "__main__":
         rob = SimulationRobobo(identifier=1)
 
         agent = SAC_RL()
-        agent.load(str(RESULTS_DIR_SAC / "sac_agent_best.pt"))
+        agent.load("../results/sac_agent_final.pt")
 
         validate_sac(
             rob,
@@ -82,6 +85,21 @@ if __name__ == "__main__":
     elif mode == "--validate-hw-sac":
         rob = HardwareRobobo(camera=False)
 
+        class IntSpeedRobobo:
+            def __init__(self, wrapped_robobo, max_speed=100):
+                self._rob = wrapped_robobo
+                self.max_speed = max_speed
+
+            def move_blocking(self, left, right, duration):
+                left = int(round(np.clip(left, -self.max_speed, self.max_speed)))
+                right = int(round(np.clip(right, -self.max_speed, self.max_speed)))
+
+                return self._rob.move_blocking(left, right, duration)
+
+            def __getattr__(self, name):
+                return getattr(self._rob, name)
+
+        rob = IntSpeedRobobo(rob, max_speed=100)
         agent = SAC_RL()
         agent.load(str(RESULTS_DIR_SAC / "sac_agent_best.pt"))
 
