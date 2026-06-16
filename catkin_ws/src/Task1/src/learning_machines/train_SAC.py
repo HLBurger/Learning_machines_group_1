@@ -208,8 +208,8 @@ def train(rob: IRobobo) -> tuple:
                 f"{best_reward:.2f} — sac_agent_best.pt updated"
             )
 
-        if ep % 10 == 0:
-            print(
+        # if ep % 10 == 0:
+        print(
                 f"Episode {ep:>4}/{N_EPISODES} | "
                 f"reward: {ep_reward:>7.2f} | "
                 f"buffer size: {len(agent.replay_buffer)} | "

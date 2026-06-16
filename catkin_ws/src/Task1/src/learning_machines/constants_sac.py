@@ -53,7 +53,7 @@ REPLAY_BUFFER_SIZE = 100_000
 LEARNING_STARTS = 1_000
 UPDATES_PER_STEP = 1
 
-N_EPISODES = 100
+N_EPISODES = 300
 MAX_STEPS = 100
 
 # ─────────────────────────────────────────────
@@ -88,7 +88,7 @@ LOG_STD_MAX = 2
 # ─────────────────────────────────────────────
 # Reward function weights
 # ─────────────────────────────────────────────
-W_SPEED = 0.6
+W_SPEED = 0.8
 W_ROTATION = 0.1
 W_PROXIMITY = 0.5
 
