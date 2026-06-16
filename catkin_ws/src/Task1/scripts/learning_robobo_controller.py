@@ -56,7 +56,7 @@ if __name__ == "__main__":
         rob = SimulationRobobo(identifier=1)
 
         agent = SAC_RL()
-        agent.load(str(RESULTS_DIR_SAC / "sac_model_final.pt"))
+        agent.load("../results/sac_agent_final.pt")
 
         validate_sac(
             rob,

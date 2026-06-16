@@ -17,6 +17,7 @@ from .constants_sac import (
     LEFT_INDICES,
     RIGHT_INDICES,
 
+    IR_STATE_DIM,
     STATE_DIM,
     IR_MAX_VALUE,
 
@@ -208,27 +209,56 @@ class SAC_RL:
         else:
             self.alpha = INIT_ALPHA
 
-    def preprocess_state(self, ir_values):
-
+    def preprocess_state(self, ir_values, pose=None, local_map=None):
         """
-        Convert raw IR values to normalized continuous state.
+        Build the full normalised state vector.
 
-        Expected input:
-            ir_values: list, tuple, or np.array of 8 raw IR readings
+        Layout: [IR (IR_STATE_DIM)] + [pose (4)] + [local_map (LOCAL_MAP_WINDOW^2)]
+        Total length: STATE_DIM (133 by default with an 11x11 window)
 
-        Output:
-            normalized np.array with values approximately in [0, 1]
+        Parameters
+        ----------
+        ir_values : array-like, length IR_STATE_DIM (8)
+            Raw IR sensor readings.
+        pose : np.ndarray, shape (4,), or None
+            (x_norm, y_norm, cos_theta, sin_theta) from OdometryMap.normalised_pose().
+            If None, zeros are used (backward-compat / no-map mode).
+        local_map : np.ndarray, shape (LOCAL_MAP_WINDOW^2,), or None
+            Flattened boolean occupancy window from OdometryMap.local_window().
+            If None, zeros are used.
+
+        Returns
+        -------
+        np.ndarray, shape (STATE_DIM,), dtype float32
         """
+        ir = np.asarray(ir_values, dtype=np.float32)
 
-        state = np.asarray(ir_values, dtype=np.float32)
+        if ir.shape[0] != IR_STATE_DIM:
+            raise ValueError(
+                f"Expected {IR_STATE_DIM} IR values, got {ir.shape[0]}"
+            )
+
+        ir_norm = np.clip(ir, 0, IR_MAX_VALUE) / IR_MAX_VALUE
+
+        pose_vec = (
+            np.asarray(pose, dtype=np.float32)
+            if pose is not None
+            else np.zeros(4, dtype=np.float32)
+        )
+        map_dim = self.state_dim - IR_STATE_DIM - 4
+        map_vec = (
+            np.asarray(local_map, dtype=np.float32)
+            if local_map is not None
+            else np.zeros(map_dim, dtype=np.float32)
+        )
+
+        state = np.concatenate([ir_norm, pose_vec, map_vec])
 
         if state.shape[0] != self.state_dim:
             raise ValueError(
-                f"Expected {self.state_dim} IR values, got {state.shape[0]}"
+                f"State vector length mismatch: expected {self.state_dim}, "
+                f"got {state.shape[0]}. Check LOCAL_MAP_WINDOW in constants_sac.py."
             )
-
-        state = np.clip(state, 0, IR_MAX_VALUE)
-        state = state / IR_MAX_VALUE
 
         return state
 
@@ -254,19 +284,24 @@ class SAC_RL:
 
         return left_speed, right_speed, ACTION_DURATION_MS
 
-    def select_action(self, ir_values, evaluate=False):
+    def select_action(self, ir_values, pose=None, local_map=None, evaluate=False):
 
         """
         Select continuous wheel-speed action.
 
-        During training:
-            evaluate=False gives stochastic actions.
-
-        During testing:
-            evaluate=True gives deterministic actions.
+        Parameters
+        ----------
+        ir_values : array-like
+            Raw IR sensor readings.
+        pose : np.ndarray or None
+            Normalised pose from OdometryMap.normalised_pose().
+        local_map : np.ndarray or None
+            Flattened local occupancy window from OdometryMap.local_window().
+        evaluate : bool
+            False -> stochastic (training), True -> deterministic (eval).
         """
 
-        state = self.preprocess_state(ir_values)
+        state = self.preprocess_state(ir_values, pose=pose, local_map=local_map)
 
         state_tensor = torch.tensor(
             state,
@@ -284,19 +319,29 @@ class SAC_RL:
 
         return self.scale_action_to_motor_speeds(action), action
 
-    def store_transition(self, state, action, reward, next_state, done):
+    def store_transition(self, state_ir, action, reward, next_state_ir, done,
+                         pose=None, next_pose=None,
+                         local_map=None, next_local_map=None):
 
         """
-        Store normalized transition in replay buffer.
+        Store normalised transition in replay buffer.
 
-        Important:
-            action should be the normalized SAC action in [-1, 1],
-            not the scaled motor speeds.
+        Parameters
+        ----------
+        state_ir, next_state_ir : array-like
+            Raw IR readings for current / next step.
+        action : array-like
+            Normalised SAC action in [-1, 1] (NOT scaled motor speeds).
+        reward : float
+        done : bool
+        pose, next_pose : np.ndarray or None
+            Normalised pose vectors.
+        local_map, next_local_map : np.ndarray or None
+            Flattened local occupancy windows.
         """
 
-        state = self.preprocess_state(state)
-
-        next_state = self.preprocess_state(next_state)
+        state      = self.preprocess_state(state_ir,      pose=pose,      local_map=local_map)
+        next_state = self.preprocess_state(next_state_ir, pose=next_pose,  local_map=next_local_map)
 
         self.replay_buffer.push(
             state=state,
@@ -431,6 +476,11 @@ class SAC_RL:
         path = RESULTS_DIR / filename
 
         checkpoint = {
+            # ── architecture metadata (needed to rebuild networks on load) ──
+            "state_dim":  self.state_dim,
+            "action_dim": self.action_dim,
+            "hidden_dim": self.actor.fc1.out_features,
+            # ── weights ────────────────────────────────────────────────────
             "actor": self.actor.state_dict(),
             "critic1": self.critic1.state_dict(),
             "critic2": self.critic2.state_dict(),
@@ -450,10 +500,56 @@ class SAC_RL:
         return path
 
     def load(self, filename="sac_agent.pt"):
-        path = RESULTS_DIR / filename
+        path = filename
 
         checkpoint = torch.load(path, map_location=self.device)
 
+        # ── Architecture check / rebuild ───────────────────────────────────
+        # Checkpoints saved before the odometry update may not have
+        # state_dim stored.  Infer it from the first actor weight tensor.
+        ckpt_state_dim  = checkpoint.get("state_dim")
+        ckpt_action_dim = checkpoint.get("action_dim")
+        ckpt_hidden_dim = checkpoint.get("hidden_dim")
+
+        if ckpt_state_dim is None:
+            # Infer from actor fc1 weight shape: (hidden_dim, state_dim)
+            ckpt_state_dim  = checkpoint["actor"]["fc1.weight"].shape[1]
+            ckpt_action_dim = checkpoint["actor"]["mean_layer.weight"].shape[0]
+            ckpt_hidden_dim = checkpoint["actor"]["fc1.weight"].shape[0]
+
+        if ckpt_state_dim != self.state_dim:
+            raise ValueError(
+                f"\n\nCheckpoint state_dim={ckpt_state_dim} does not match "
+                f"the current STATE_DIM={self.state_dim}.\n"
+                f"This usually means you are loading a model trained without "
+                f"the odometry map (state_dim=8) into an agent that expects "
+                f"IR + pose + local-map observations (state_dim={self.state_dim}).\n\n"
+                f"Options:\n"
+                f"  1. Train from scratch with the new observation space "
+                f"     (recommended — the old weights are not compatible).\n"
+                f"  2. Load the old checkpoint for inference only by temporarily "
+                f"     setting LOCAL_MAP_WINDOW=1, POSE_DIM=0 in constants_sac.py "
+                f"     so STATE_DIM={ckpt_state_dim}, but you will lose map observations.\n"
+            )
+
+        # Rebuild networks if hidden_dim differs from current default
+        if ckpt_hidden_dim is not None and ckpt_hidden_dim != HIDDEN_DIM:
+            self.actor = Actor(
+                state_dim=self.state_dim,
+                action_dim=self.action_dim,
+                hidden_dim=ckpt_hidden_dim,
+            ).to(self.device)
+            for attr in ("critic1", "critic2", "target_critic1", "target_critic2"):
+                setattr(self, attr, Critic(
+                    state_dim=self.state_dim,
+                    action_dim=self.action_dim,
+                    hidden_dim=ckpt_hidden_dim,
+                ).to(self.device))
+            self.actor_optimizer   = Adam(self.actor.parameters(),   lr=ACTOR_LR)
+            self.critic1_optimizer = Adam(self.critic1.parameters(), lr=CRITIC_LR)
+            self.critic2_optimizer = Adam(self.critic2.parameters(), lr=CRITIC_LR)
+
+        # ── Load weights ───────────────────────────────────────────────────
         self.actor.load_state_dict(checkpoint["actor"])
         self.critic1.load_state_dict(checkpoint["critic1"])
         self.critic2.load_state_dict(checkpoint["critic2"])
