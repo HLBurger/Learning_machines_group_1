@@ -1,173 +1,184 @@
+"""
+reward_sac.py — Task 2 foraging reward function.
+
+Design principles (TA feedback + literature):
+  - No hardcoded thresholds for behaviour switching
+  - All components continuous and naturally scaled
+  - Speed regulated by context (fast when searching, slow near walls)
+  - Centering gated by forward motion (no spin-in-place exploit)
+  - Approach uses static + delta blob size (no stalling before touch)
+  - Penalty when food not visible (no parking-and-staring exploit)
+  - Urgency grows over time (competition: 3 minutes = collect fast)
+  - IR = wall signal only (walls are white)
+  - Camera = food signal only (food is green)
+"""
+
+import numpy as np
 from .constants_sac import (
     FRONT_INDICES,
     IR_COLLISION_THRESHOLD,
-    IR_NEAR_THRESHOLD,
-    W_SPEED,
-    W_ROTATION,
-    W_PROXIMITY,
-    EXPLORATION_BONUS,
-    COLLISION_PENALTY,
-    AVOIDANCE_BONUS,
     MAX_WHEEL_SPEED,
-    W_OBJECT_APPROACH,
-    OBJECT_CENTERING_BONUS,
-    OBJECT_APPROACH_BONUS,
-    SIZE_APPROACH_MIN_DELTA,
-    IR_APPROACH_MIN_DELTA,
+    MAX_STEPS,
+    FOOD_TOUCH_REWARD,
+    FOOD_SPEED_BONUS,
+    W_CENTERING,
+    W_APPROACH_STATIC,
+    W_APPROACH_DELTA,
+    W_SPEED_SEARCH,
+    W_SPEED_WALL,
+    NOT_VISIBLE_PENALTY,
+    W_PROXIMITY,
+    GRID_SIZE,
+    EXPLORATION_BONUS,
+    URGENCY_PENALTY,
+    MAX_URGENCY_STEPS,
+    COLLISION_PENALTY,
 )
-from .vision import classify_collision, analyse_frame
 
 
 def compute_reward(
     left_speed: float,
     right_speed: float,
     irs: list,
-    prev_irs: list,
-    odom_map,           # OdometryMap instance
-    sim_position=None,  # simulation Position object, or None
-    frame=None,         # camera frame (np.ndarray BGR) or None
-    prev_frame=None,    # previous step's camera frame, for approach detection
+    vision: dict,
+    prev_vision: dict,
+    food_collected: int,
+    prev_food_collected: int,
+    current_step: int,
+    steps_since_food: int,
+    position,
+    visited_cells: set,
 ) -> tuple:
     """
-    Compute the reward for one SAC step and advance the odometry map.
+    Compute Task 2 reward for one SAC step.
 
     Parameters
     ----------
-    left_speed    : float        — left wheel speed chosen by SAC
-    right_speed   : float        — right wheel speed chosen by SAC
-    irs           : list         — current raw IR sensor readings, length 8
-    prev_irs      : list         — previous step IR readings, length 8
-    odom_map      : OdometryMap  — live map; will be mutated in-place
-    sim_position  : object with .x .y, or None
-                    When provided (simulation only), used for ground-truth XY.
-    frame         : np.ndarray or None
-                    Front camera frame used by classify_collision.
-                    When None, collision_type is inferred from IR only.
-    prev_frame    : np.ndarray or None
-                    Previous step's camera frame, used to detect whether
-                    the robot is closing in on a food object.
+    left_speed, right_speed : float  — wheel speeds [-25, 25]
+    irs                     : list   — current IR readings (8)
+    vision                  : dict   — current analyse_frame() output
+    prev_vision             : dict   — previous step analyse_frame() output
+    food_collected          : int    — total food count this episode
+    prev_food_collected     : int    — previous step food count
+    current_step            : int    — step index within episode
+    steps_since_food        : int    — steps since last food collected
+    position                : Position or None  — sim position for grid
+    visited_cells           : set    — grid cells visited this episode
 
     Returns
     -------
-    reward         : float — scalar reward for this step
-    new_cell       : bool  — True if the agent entered a previously-unseen cell
-    collision      : bool  — whether the robot collided
-    collision_type : str   — "none" | "wall" | "object"
+    reward           : float
+    collision        : bool
+    steps_since_food : int (updated)
+    visited_cells    : set (updated)
+    info             : dict of components for logging
     """
 
-    max_speed = float(MAX_WHEEL_SPEED)
+    # normalised forward motion [0, 1]
+    forward = max((left_speed + right_speed) / (2.0 * MAX_WHEEL_SPEED), 0.0)
 
-    # 1. Forward speed reward, normalized 0 -> 1
-    s_trans = (left_speed + right_speed) / (2.0 * max_speed)
-    s_trans = max(s_trans, 0.0)
+    # normalised front IR [0, 1]
+    front_ir_norm = max(irs[i] for i in FRONT_INDICES) / 255.0
 
-    # 2. Rotation penalty, 0 (straight) -> 1 (full spin)
-    s_rot = abs(left_speed - right_speed) / (2.0 * max_speed)
-    s_rot = min(s_rot, 1.0)
-
-    # 3. Collision check + type classification
-    front_vals = [irs[i] for i in FRONT_INDICES]
-    front_max = max(front_vals)
-    if frame is not None:
-        # Pass the full front IR list so classify_collision can use the median
-        collision_type = classify_collision(frame, front_vals, IR_COLLISION_THRESHOLD)
+    # ── 1. Food touch ─────────────────────────────────────────────────
+    food_touched = food_collected > prev_food_collected
+    if food_touched:
+        steps_since_food = 0
+        speed_bonus      = FOOD_SPEED_BONUS * (1.0 - current_step / MAX_STEPS)
+        touch_reward     = FOOD_TOUCH_REWARD + speed_bonus
     else:
-        # No camera feed: IR-only fallback (cannot detect objects without vision)
-        collision_type = "wall" if front_max > IR_COLLISION_THRESHOLD else "none"
-    collision = collision_type == "wall"
+        touch_reward = 0.0
 
-    # 4. Proximity score (0 = nothing near, 1 = very close)
-    # front_vals already computed above
-    v_sens = min(max(max(front_vals) / 255.0, 0.0), 1.0)
+    # ── 2. Camera-guided approach (gated by forward motion) ───────────
+    obj_visible  = vision["obj_visible"]
+    obj_dx       = vision["obj_dx"]
+    obj_size     = vision["obj_size"]
+    prev_size    = prev_vision["obj_size"]
 
-    wall_proximity = 0.0
-    object_proximity = 0.0
-    ir_object_reward = 0.0
-    proximity_reward = 0.0
+    if obj_visible:
+        # centering: reward facing food regardless of forward speed
+        # gating by forward was preventing the robot from learning to turn toward food
+        centering  = W_CENTERING * (1.0 - abs(obj_dx))
 
-    if collision_type == "wall":
-        wall_proximity = v_sens
-    elif collision_type == "object":
-        object_proximity = v_sens
-        ir_object_reward += object_proximity
+        # approach: static size (closeness) + size growth (moving closer)
+        size_delta = max(obj_size - prev_size, 0.0)
+        approach   = W_APPROACH_STATIC * obj_size + W_APPROACH_DELTA * size_delta
 
-    # stay away from walls
-    proximity_reward -= W_PROXIMITY * wall_proximity
+        not_visible = 0.0
+    else:
+        centering   = 0.0
+        approach    = 0.0
+        # penalty for losing food from view (prevents parking-and-staring)
+        not_visible = NOT_VISIBLE_PENALTY
 
-    # get close to objects
-    proximity_reward += W_PROXIMITY * object_proximity
+    # ── 3. Speed regulation ───────────────────────────────────────────
+    if not obj_visible:
+        # reward moving fast when searching (no food in view)
+        speed_reward = W_SPEED_SEARCH * forward
+    else:
+        speed_reward = 0.0
 
-    # 5. Avoidance bonus (was near → now clear)
-    prev_front_vals = [prev_irs[i] for i in FRONT_INDICES]
-    prev_v_sens = max(prev_front_vals) / 255.0
-    prev_v_sens = min(max(prev_v_sens, 0.0), 1.0)
+    # penalise moving fast near walls regardless of food visibility
+    speed_wall_penalty = -W_SPEED_WALL * forward * front_ir_norm
 
-    avoidance = 0.0
+    # ── 4. Wall proximity penalty — proportional ──────────────────────
+    wall_penalty = -W_PROXIMITY * front_ir_norm
 
-    if collision_type != "object":
-        was_near = prev_v_sens > 0.4
-        is_clear = v_sens < 0.2
-        
+    # ── 5. Collision ──────────────────────────────────────────────────
+    # walls are white so IR high = wall collision, not food
+    n_triggered  = sum(1 for i in FRONT_INDICES if irs[i] > IR_COLLISION_THRESHOLD)
+    collision    = n_triggered >= 2
+    coll_penalty = COLLISION_PENALTY * (n_triggered / len(FRONT_INDICES))
 
-        if was_near and is_clear:
-            avoidance = AVOIDANCE_BONUS
-    
-    if collision_type == "object":
-        
-        if v_sens - prev_v_sens > IR_APPROACH_MIN_DELTA:
-            ir_object_reward += OBJECT_APPROACH_BONUS
+    # ── 6. Exploration when no food visible ───────────────────────────
+    exploration = 0.0
+    if not obj_visible and position is not None:
+        cell = (int(position.x / GRID_SIZE), int(position.y / GRID_SIZE))
+        if cell not in visited_cells:
+            exploration = EXPLORATION_BONUS
+            visited_cells = visited_cells | {cell}
 
-    # 6. Food object approach incentive
-    object_reward = 0.0
-    if frame is not None:
-        feats = analyse_frame(frame)
-        if feats["object_visible"]:
-            # Reward for facing the object: 1.0 when centred, 0.0 at the edge
-            centering = 1.0 - abs(feats["object_dx"])
-            object_reward = W_OBJECT_APPROACH * centering * feats["object_size"]
+    # ── 7. Urgency ────────────────────────────────────────────────────
+    capped_steps = min(steps_since_food, MAX_URGENCY_STEPS)
+    urgency      = URGENCY_PENALTY * capped_steps
 
-            # Bonus for being well-centred (actively steering toward it)
-            if abs(feats["object_dx"]) < 0.2:
-                object_reward += OBJECT_CENTERING_BONUS
-
-            # Bonus when the object grew since the last frame (robot closing in)
-            if prev_frame is not None:
-                prev_feats = analyse_frame(prev_frame)
-
-                
-                if prev_feats["object_visible"] and feats["object_size"] - prev_feats["object_size"] > SIZE_APPROACH_MIN_DELTA:
-                    object_reward += OBJECT_APPROACH_BONUS
-
-    # 7. Odometry map update + exploration bonus
-    #    OdometryMap.update() returns True when a new cell is entered.
-    new_cell  = odom_map.update(left_speed, right_speed, sim_position=sim_position)
-    exploration = EXPLORATION_BONUS if new_cell else 0.0
-
-    # 8. Collision penalties/reward
-    collision_reward = 0.0
-
-    if collision_type == "wall":
-        collision_reward = COLLISION_PENALTY
-
-    elif collision_type == "object":
-        collision_reward = abs(COLLISION_PENALTY)
-
-
-    # 9. Combine
+    # ── 8. Combine ────────────────────────────────────────────────────
     reward = (
-        W_SPEED * s_trans
-        + W_ROTATION * (1.0 - s_rot)
-        + proximity_reward
-        + avoidance
-        + object_reward
-        + ir_object_reward
-        + exploration
-        + collision_reward
+        touch_reward
+      + centering
+      + approach
+      + not_visible
+      + speed_reward
+      + speed_wall_penalty
+      + wall_penalty
+      + coll_penalty
+      + exploration
+      + urgency
     )
 
-    return reward, new_cell, collision, collision_type
+    if not food_touched:
+        steps_since_food += 1
+
+    info = {
+        "touch"             : touch_reward,
+        "centering"         : centering,
+        "approach"          : approach,
+        "not_visible"       : not_visible,
+        "speed_search"      : speed_reward,
+        "speed_wall_penalty": speed_wall_penalty,
+        "wall"              : wall_penalty,
+        "collision"         : coll_penalty,
+        "exploration"       : exploration,
+        "urgency"           : urgency,
+        "obj_visible"       : obj_visible,
+        "obj_size"          : obj_size,
+        "food_total"        : food_collected,
+    }
+
+    return reward, collision, steps_since_food, visited_cells, info
 
 
 def front_blocked(irs: list) -> bool:
-    """True if any front sensor exceeds IR_NEAR_THRESHOLD."""
-    return any(irs[i] > IR_NEAR_THRESHOLD for i in FRONT_INDICES)
+    """True if majority of front sensors triggered."""
+    from .constants_sac import IR_NEAR_THRESHOLD
+    return sum(1 for i in FRONT_INDICES if irs[i] > IR_NEAR_THRESHOLD) >= 2

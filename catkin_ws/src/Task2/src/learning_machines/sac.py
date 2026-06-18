@@ -20,6 +20,7 @@ from .constants_sac import (
     IR_STATE_DIM,
     STATE_DIM,
     VISION_DIM,
+    LAST_ACTION_DIM,
     IR_MAX_VALUE,
 
     ACTION_DIM,
@@ -210,65 +211,36 @@ class SAC_RL:
         else:
             self.alpha = INIT_ALPHA
 
-    def preprocess_state(self, ir_values, pose=None, local_map=None, vision_feats=None):
+    def preprocess_state(
+        self,
+        ir_values,
+        vision_feats=None,
+        last_action=None,
+    ):
         """
-        Build the full normalised state vector.
-
-        Layout: [IR (IR_STATE_DIM)] + [pose (4)] + [local_map (LOCAL_MAP_WINDOW^2)] + [vision (VISION_DIM)]
-        Total length: STATE_DIM
-
-        Parameters
-        ----------
-        ir_values : array-like, length IR_STATE_DIM (8)
-            Raw IR sensor readings.
-        pose : np.ndarray, shape (4,), or None
-            (x_norm, y_norm, cos_theta, sin_theta) from OdometryMap.normalised_pose().
-            If None, zeros are used (backward-compat / no-map mode).
-        local_map : np.ndarray, shape (LOCAL_MAP_WINDOW^2,), or None
-            Flattened boolean occupancy window from OdometryMap.local_window().
-            If None, zeros are used.
-        vision_feats : array-like, shape (VISION_DIM,), or None
-            [object_visible, object_dx, object_size, wall_visible, wall_frac]
-            from analyse_frame(). If None, zeros are used.
-
-        Returns
-        -------
-        np.ndarray, shape (STATE_DIM,), dtype float32
+        Build state vector: [IR (8)] + [vision (3)] + [last_action (2)] = 13
+        Walls are white, food is green — no map or pose needed.
         """
         ir = np.asarray(ir_values, dtype=np.float32)
-
-        if ir.shape[0] != IR_STATE_DIM:
-            raise ValueError(
-                f"Expected {IR_STATE_DIM} IR values, got {ir.shape[0]}"
-            )
-
         ir_norm = np.clip(ir, 0, IR_MAX_VALUE) / IR_MAX_VALUE
 
-        pose_vec = (
-            np.asarray(pose, dtype=np.float32)
-            if pose is not None
-            else np.zeros(4, dtype=np.float32)
-        )
-        map_dim = self.state_dim - IR_STATE_DIM - 4 - VISION_DIM
-        map_vec = (
-            np.asarray(local_map, dtype=np.float32)
-            if local_map is not None
-            else np.zeros(map_dim, dtype=np.float32)
-        )
-        vision_vec = (
+        vis = (
             np.asarray(vision_feats, dtype=np.float32)
             if vision_feats is not None
             else np.zeros(VISION_DIM, dtype=np.float32)
         )
+        act = (
+            np.asarray(last_action, dtype=np.float32)
+            if last_action is not None
+            else np.zeros(LAST_ACTION_DIM, dtype=np.float32)
+        )
 
-        state = np.concatenate([ir_norm, pose_vec, map_vec, vision_vec])
+        state = np.concatenate([ir_norm, vis, act])
 
         if state.shape[0] != self.state_dim:
             raise ValueError(
-                f"State vector length mismatch: expected {self.state_dim}, "
-                f"got {state.shape[0]}. Check LOCAL_MAP_WINDOW / VISION_DIM in constants_sac.py."
+                f"State length mismatch: expected {self.state_dim}, got {state.shape[0]}"
             )
-
         return state
 
     def scale_action_to_motor_speeds(self, action):
@@ -293,33 +265,17 @@ class SAC_RL:
 
         return left_speed, right_speed, ACTION_DURATION_MS
 
-    def select_action(self, ir_values, pose=None, local_map=None, vision_feats=None, evaluate=False):
+    def select_action(
+        self,
+        ir_values,
+        vision_feats=None,
+        last_action=None,
+        evaluate=False,
+    ):
+        """Select action. evaluate=True for deterministic (validation/hardware)."""
+        state = self.preprocess_state(ir_values, vision_feats=vision_feats, last_action=last_action)
 
-        """
-        Select continuous wheel-speed action.
-
-        Parameters
-        ----------
-        ir_values : array-like
-            Raw IR sensor readings.
-        pose : np.ndarray or None
-            Normalised pose from OdometryMap.normalised_pose().
-        local_map : np.ndarray or None
-            Flattened local occupancy window from OdometryMap.local_window().
-        vision_feats : array-like or None
-            [object_visible, object_dx, object_size, wall_visible, wall_frac]
-            from analyse_frame(). If None, zeros are used.
-        evaluate : bool
-            False -> stochastic (training), True -> deterministic (eval).
-        """
-
-        state = self.preprocess_state(ir_values, pose=pose, local_map=local_map, vision_feats=vision_feats)
-
-        state_tensor = torch.tensor(
-            state,
-            dtype=torch.float32,
-            device=self.device,
-        ).unsqueeze(0)
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         with torch.no_grad():
             if evaluate:
@@ -328,35 +284,23 @@ class SAC_RL:
                 action_tensor, _ = self.actor.sample(state_tensor)
 
         action = action_tensor.cpu().numpy()[0]
-
         return self.scale_action_to_motor_speeds(action), action
 
-    def store_transition(self, state_ir, action, reward, next_state_ir, done,
-                         pose=None, next_pose=None,
-                         local_map=None, next_local_map=None,
-                         vision_feats=None, next_vision_feats=None):
-
-        """
-        Store normalised transition in replay buffer.
-
-        Parameters
-        ----------
-        state_ir, next_state_ir : array-like
-            Raw IR readings for current / next step.
-        action : array-like
-            Normalised SAC action in [-1, 1] (NOT scaled motor speeds).
-        reward : float
-        done : bool
-        pose, next_pose : np.ndarray or None
-            Normalised pose vectors.
-        local_map, next_local_map : np.ndarray or None
-            Flattened local occupancy windows.
-        vision_feats, next_vision_feats : array-like or None
-            Vision feature vectors from analyse_frame().
-        """
-
-        state      = self.preprocess_state(state_ir,      pose=pose,      local_map=local_map,      vision_feats=vision_feats)
-        next_state = self.preprocess_state(next_state_ir, pose=next_pose,  local_map=next_local_map, vision_feats=next_vision_feats)
+    def store_transition(
+        self,
+        state_ir,
+        action,
+        reward,
+        next_state_ir,
+        done,
+        vision_feats=None,
+        next_vision_feats=None,
+        last_action=None,
+        next_last_action=None,
+    ):
+        """Store transition. action is normalised SAC action in [-1, 1]."""
+        state      = self.preprocess_state(state_ir,      vision_feats=vision_feats,      last_action=last_action)
+        next_state = self.preprocess_state(next_state_ir, vision_feats=next_vision_feats, last_action=next_last_action)
 
         self.replay_buffer.push(
             state=state,
@@ -365,7 +309,6 @@ class SAC_RL:
             next_state=next_state,
             done=done,
         )
-
         self.total_steps += 1
 
     def current_alpha(self):

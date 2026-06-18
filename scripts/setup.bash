@@ -19,4 +19,4 @@ fi
 #    hostname -I | awk '{print $1}'
 # macOS:
 #    ipconfig getifaddr en1
-export COPPELIA_SIM_IP="192.168.86.75"
+export COPPELIA_SIM_IP="192.168.0.43"

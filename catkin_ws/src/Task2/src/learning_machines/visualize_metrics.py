@@ -2,32 +2,29 @@ import os
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import matplotlib.ticker as ticker
-from pathlib import Path
 from .constants_sac import FRONT_INDICES, IR_THRESHOLD
 
 
 class RLMetrics:
     """
-    Tracks per-step and per-episode metrics during RL training.
-    Stores separate reward components for detailed analysis.
+    Tracks per-step and per-episode metrics for Task 2 SAC foraging.
+
+    Per step  : reward, speed, collision, avoidance, food count, blob visibility
+    Per episode: total reward, steps, food collected, avg steps per food,
+                 blob visible fraction
     """
 
     def __init__(self, label="Training"):
         self.label = label
 
-        # per-step buffers (reset each episode)
-        self._step_rewards     = []
-        self._step_speeds      = []
-        self._step_collisions  = []
-        self._step_avoidances  = []
-        self._step_front_ir    = []
-        self._step_obj_visible = []
-        self._step_obj_dx      = []
-        self._step_obj_size    = []
-        self._step_wall_visible = []
-        self._step_wall_frac   = []
+        # per-step buffers
+        self._step_rewards    = []
+        self._step_speeds     = []
+        self._step_collisions = []
+        self._step_avoidances = []
+        self._step_food       = []
+        self._step_obj_vis    = []
+        self._step_obj_size   = []
         self.cells_this_episode = 0
 
         # per-episode storage
@@ -36,105 +33,91 @@ class RLMetrics:
         self.episode_cells      = []
         self.episode_speeds     = []
         self.episode_collisions = []
-        self.episode_avoidances = []
+        self.episode_food       = []        # food collected per episode
+        self.episode_steps_per_food = []   # avg steps to collect one food
+        self.episode_obj_vis    = []        # fraction of steps food was visible
         self.epsilon_history    = []
-        self.episode_obj_visible  = []
-        self.episode_obj_dx       = []
-        self.episode_obj_size     = []
-        self.episode_wall_visible = []
-        self.episode_wall_frac    = []
 
-    # ── Per-step recording ────────────────────────────────────────────────
+    # ── Per-step recording ─────────────────────────────────────────────
 
     def record_step(
         self,
-        action: int,
+        action,
         irs: list,
         reward: float,
         epsilon: float,
         speed: float,
         collision: bool,
         avoidance: float,
-        vision_feats=None,
+        food_collected: int = 0,
+        obj_visible: bool = False,
+        obj_size: float = 0.0,
     ):
         self._step_rewards.append(reward)
         self._step_speeds.append(speed)
         self._step_collisions.append(1.0 if collision else 0.0)
         self._step_avoidances.append(avoidance)
-        self._step_front_ir.append(max(irs[i] for i in FRONT_INDICES))
+        self._step_food.append(food_collected)
+        self._step_obj_vis.append(1.0 if obj_visible else 0.0)
+        self._step_obj_size.append(obj_size)
         self.epsilon_history.append(epsilon)
-
-        if vision_feats is not None:
-            self._step_obj_visible.append(float(vision_feats[0]))
-            self._step_obj_dx.append(float(vision_feats[1]))
-            self._step_obj_size.append(float(vision_feats[2]))
-            self._step_wall_visible.append(float(vision_feats[3]))
-            self._step_wall_frac.append(float(vision_feats[4]))
 
     def record_new_cell(self):
         self.cells_this_episode += 1
 
-    # ── Per-episode recording ─────────────────────────────────────────────
+    # ── Per-episode recording ──────────────────────────────────────────
 
-    def end_episode(self, total_reward: float):
+    def end_episode(self, total_reward: float, food_collected: int = 0):
+        n_steps = len(self._step_rewards)
         self.episode_rewards.append(total_reward)
-        self.episode_steps.append(len(self._step_rewards))
+        self.episode_steps.append(n_steps)
         self.episode_cells.append(self.cells_this_episode)
+        self.episode_food.append(food_collected)
         self.episode_speeds.append(
             float(np.mean(self._step_speeds)) if self._step_speeds else 0.0
         )
         self.episode_collisions.append(
             float(np.mean(self._step_collisions)) if self._step_collisions else 0.0
         )
-        self.episode_avoidances.append(
-            float(np.sum(self._step_avoidances)) if self._step_avoidances else 0.0
+        self.episode_obj_vis.append(
+            float(np.mean(self._step_obj_vis)) if self._step_obj_vis else 0.0
         )
+        # avg steps per food — avoids division by zero
+        if food_collected > 0:
+            self.episode_steps_per_food.append(n_steps / food_collected)
+        else:
+            self.episode_steps_per_food.append(float(n_steps))  # no food = all steps wasted
 
-        def _mean_or(buf, default=0.0):
-            return float(np.mean(buf)) if buf else default
-
-        self.episode_obj_visible.append(_mean_or(self._step_obj_visible))
-        self.episode_obj_dx.append(_mean_or(self._step_obj_dx))
-        self.episode_obj_size.append(_mean_or(self._step_obj_size))
-        self.episode_wall_visible.append(_mean_or(self._step_wall_visible))
-        self.episode_wall_frac.append(_mean_or(self._step_wall_frac))
-
-        # reset step buffers
-        self._step_rewards     = []
-        self._step_speeds      = []
-        self._step_collisions  = []
-        self._step_avoidances  = []
-        self._step_front_ir    = []
-        self._step_obj_visible = []
-        self._step_obj_dx      = []
-        self._step_obj_size    = []
-        self._step_wall_visible = []
-        self._step_wall_frac   = []
+        # reset
+        self._step_rewards    = []
+        self._step_speeds     = []
+        self._step_collisions = []
+        self._step_avoidances = []
+        self._step_food       = []
+        self._step_obj_vis    = []
+        self._step_obj_size   = []
         self.cells_this_episode = 0
 
-    # ── Save raw data ─────────────────────────────────────────────────────
+    # ── Save raw data ──────────────────────────────────────────────────
 
     def save_raw(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         data = {
-            "label"               : self.label,
-            "episode_rewards"     : self.episode_rewards,
-            "episode_steps"       : self.episode_steps,
-            "episode_cells"       : self.episode_cells,
-            "episode_speeds"      : self.episode_speeds,
-            "episode_collisions"  : self.episode_collisions,
-            "episode_avoidances"  : self.episode_avoidances,
-            "episode_obj_visible" : self.episode_obj_visible,
-            "episode_obj_dx"      : self.episode_obj_dx,
-            "episode_obj_size"    : self.episode_obj_size,
-            "episode_wall_visible": self.episode_wall_visible,
-            "episode_wall_frac"   : self.episode_wall_frac,
+            "label"                   : self.label,
+            "episode_rewards"         : self.episode_rewards,
+            "episode_steps"           : self.episode_steps,
+            "episode_cells"           : self.episode_cells,
+            "episode_food"            : self.episode_food,
+            "episode_steps_per_food"  : self.episode_steps_per_food,
+            "episode_speeds"          : self.episode_speeds,
+            "episode_collisions"      : self.episode_collisions,
+            "episode_obj_vis"         : self.episode_obj_vis,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
         print(f"Raw data saved -> {path}")
 
-    # ── Helpers ───────────────────────────────────────────────────────────
+    # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
     def _rolling(arr, window):
@@ -152,70 +135,56 @@ class RLMetrics:
 
     @staticmethod
     def _smart_ylim(ax, data):
-        """Set y-axis using percentiles to ignore early outliers."""
         lo = np.percentile(data, 10)
         hi = np.percentile(data, 100)
         margin = (hi - lo) * 0.15
         ax.set_ylim(lo - margin, hi + margin)
 
-    # ── Plot 1: Training component curves ────────────────────────────────
+    @staticmethod
+    def _plot_with_band(ax, data, window, color, label):
+        episodes = np.arange(len(data))
+        roll     = RLMetrics._rolling(data, window)
+        roll_x   = np.arange(window - 1, len(data))
+        roll_std = np.array([
+            np.std(data[max(0, i - window):i + 1])
+            for i in range(window - 1, len(data))
+        ])
+        ax.plot(episodes, data, alpha=0.35, linewidth=0.9, color=color, label="Per episode")
+        ax.plot(roll_x, roll, linewidth=2.0, color="black", label=f"Rolling mean ({window})")
+        ax.fill_between(roll_x, roll - roll_std, roll + roll_std, alpha=0.2, color="tab:red", label="±1 std")
+
+    # ── Plot 1: Training curves ────────────────────────────────────────
 
     def plot_training(self, save_path: str = "results/figures/") -> None:
         """
-        3-panel plot: Total Reward | Mean Speed | Collision Rate
-        Each with per-episode line, rolling mean, and ±1 std band.
-        Matches slides 'Analysing metrics' layout.
+        3-panel: Total Reward | Mean Speed | Collision Rate
+        Matches lecture 'Analysing metrics' layout.
         """
         if not self.episode_rewards:
             print("No episodes recorded yet.")
             return
 
-        episodes = np.arange(len(self.episode_rewards))
-        window   = min(10, len(episodes))
-
-        rewards    = np.array(self.episode_rewards)
-        speeds     = np.array(self.episode_speeds)
-        collisions = np.array(self.episode_collisions)
+        window = min(10, len(self.episode_rewards))
 
         fig, axes = plt.subplots(1, 3, figsize=(16, 5))
         fig.suptitle(
-            f"Training Metrics — {self.label} ({len(episodes)} episodes)",
+            f"Training Metrics — {self.label} ({len(self.episode_rewards)} episodes)",
             fontsize=13, fontweight="bold"
         )
 
         configs = [
-            (axes[0], rewards,    "Total Reward",   "Total Reward",        False),
-            (axes[1], speeds,     "Mean Speed",     "Speed (normalised)",  True),
-            (axes[2], collisions, "Collision Rate", "Collision Rate",      True),
+            (axes[0], np.array(self.episode_rewards),    "Total Reward",   "Total Reward",       False),
+            (axes[1], np.array(self.episode_speeds),     "Mean Speed",     "Speed (normalised)", True),
+            (axes[2], np.array(self.episode_collisions), "Collision Rate", "Collision Rate",     True),
         ]
 
         for ax, data, title, ylabel, fixed_ylim in configs:
-            roll = RLMetrics._rolling(data, window)
-            roll_x = np.arange(window - 1, len(data))
-
-            # rolling std for shading
-            roll_std = np.array([
-                np.std(data[max(0, i - window):i + 1])
-                for i in range(window - 1, len(data))
-            ])
-
-            ax.plot(episodes, data, alpha=0.35, linewidth=0.9,
-                    color="tab:blue", label="Per episode")
-            ax.plot(roll_x, roll, linewidth=2.0, color="black",
-                    label=f"Rolling mean ({window})")
-            ax.fill_between(
-                roll_x,
-                roll - roll_std,
-                roll + roll_std,
-                alpha=0.2, color="tab:red", label="±1 std"
-            )
+            RLMetrics._plot_with_band(ax, data, window, "tab:blue", "Per episode")
             ax.legend(fontsize=7, framealpha=0.2)
             RLMetrics._style(ax, title, "Episode", ylabel)
-
             if fixed_ylim:
                 ax.set_ylim(-0.05, 1.05)
             else:
-                # clip to ignore early outliers
                 RLMetrics._smart_ylim(ax, data)
 
         plt.tight_layout()
@@ -226,71 +195,95 @@ class RLMetrics:
             print(f"Figure saved -> {path}")
         plt.show()
 
-    # ── Plot 2: Training vs Validation curves ────────────────────────────
+    # ── Plot 2: Food metrics ───────────────────────────────────────────
 
-    @staticmethod
-    def plot_training_vs_validation(
-        train_metrics,
-        val_metrics,
-        save_path: str = "results/figures/",
-    ) -> None:
+    def plot_food_metrics(self, save_path: str = "results/figures/") -> None:
         """
-        Training curve (blue) + validation band (green dashed ± std).
+        Task 2 specific plots matching the paper (Fig 3):
+          - Food collected per episode (bar chart)
+          - Avg steps per food per episode (line chart)
+          - Food visible fraction per episode
         """
+        if not self.episode_food:
+            print("No food data recorded.")
+            return
+
+        episodes = np.arange(len(self.episode_food))
+        window   = min(10, len(episodes))
+
         fig, axes = plt.subplots(1, 3, figsize=(16, 5))
         fig.suptitle(
-            "Training vs Validation Performance",
+            f"Food Collection Metrics — {self.label}",
             fontsize=13, fontweight="bold"
         )
 
+        # AX1: food collected per episode (bar)
+        ax1 = axes[0]
+        food = np.array(self.episode_food)
+        ax1.bar(episodes, food, color="tab:green", alpha=0.7, label="Food collected")
+        if len(food) >= window:
+            roll = RLMetrics._rolling(food.astype(float), window)
+            ax1.plot(np.arange(window - 1, len(food)), roll,
+                     color="black", linewidth=2.0, label=f"Rolling mean ({window})")
+        ax1.legend(fontsize=7, framealpha=0.2)
+        RLMetrics._style(ax1, "Food Collected per Episode", "Episode", "Packages")
+
+        # AX2: avg steps per food (line — lower = faster)
+        ax2 = axes[1]
+        spf = np.array(self.episode_steps_per_food)
+        RLMetrics._plot_with_band(ax2, spf, window, "tab:orange", "Steps/food")
+        ax2.legend(fontsize=7, framealpha=0.2)
+        RLMetrics._style(ax2, "Avg Steps per Food (lower = faster)", "Episode", "Steps / package")
+        RLMetrics._smart_ylim(ax2, spf)
+
+        # AX3: fraction of steps food was visible
+        ax3 = axes[2]
+        vis = np.array(self.episode_obj_vis)
+        RLMetrics._plot_with_band(ax3, vis, window, "tab:blue", "Visible fraction")
+        ax3.set_ylim(-0.05, 1.05)
+        ax3.legend(fontsize=7, framealpha=0.2)
+        RLMetrics._style(ax3, "Fraction of Steps Food Visible", "Episode", "Fraction")
+
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            path = os.path.join(save_path, f"food_metrics_{self.label}.png")
+            fig.savefig(path, dpi=300)
+            print(f"Figure saved -> {path}")
+        plt.show()
+
+    # ── Plot 3: Training vs Validation ────────────────────────────────
+
+    @staticmethod
+    def plot_training_vs_validation(train_metrics, val_metrics, save_path="results/figures/"):
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+        fig.suptitle("Training vs Validation Performance", fontsize=13, fontweight="bold")
+
         pairs = [
-            (
-                np.array(train_metrics.episode_rewards),
-                np.array(val_metrics.episode_rewards),
-                "Total Reward", "Total Reward", False
-            ),
-            (
-                np.array(train_metrics.episode_speeds),
-                np.array(val_metrics.episode_speeds),
-                "Mean Speed", "Speed (normalised)", True
-            ),
-            (
-                np.array(train_metrics.episode_collisions),
-                np.array(val_metrics.episode_collisions),
-                "Collision Rate", "Collision Rate", True
-            ),
+            (np.array(train_metrics.episode_rewards),    np.array(val_metrics.episode_rewards),    "Total Reward",   False),
+            (np.array(train_metrics.episode_food),       np.array(val_metrics.episode_food),       "Food Collected", False),
+            (np.array(train_metrics.episode_collisions), np.array(val_metrics.episode_collisions), "Collision Rate", True),
         ]
 
-        for ax, (train_data, val_data, title, ylabel, fixed_ylim) in zip(axes, pairs):
-            t_x = np.arange(len(train_data))
-
-            # training curve
-            ax.plot(t_x, train_data, color="tab:blue",
-                    linewidth=1.0, alpha=0.4, label="Training (per episode)")
-
+        for ax, (train_data, val_data, title, fixed_ylim) in zip(axes, pairs):
             window = min(10, len(train_data))
-            roll   = RLMetrics._rolling(train_data, window)
-            roll_x = np.arange(window - 1, len(train_data))
-            roll_std = np.array([
-                np.std(train_data[max(0, i - window):i + 1])
-                for i in range(window - 1, len(train_data))
-            ])
-            ax.plot(roll_x, roll, color="tab:blue",
-                    linewidth=2.0, label="Training rolling mean")
-            ax.fill_between(roll_x, roll - roll_std, roll + roll_std,
-                            alpha=0.2, color="tab:blue")
+            t_x    = np.arange(len(train_data))
+            ax.plot(t_x, train_data, color="tab:blue", linewidth=1.0, alpha=0.4, label="Training")
 
-            # validation as horizontal band
+            roll     = RLMetrics._rolling(train_data.astype(float), window)
+            roll_x   = np.arange(window - 1, len(train_data))
+            roll_std = np.array([np.std(train_data[max(0, i-window):i+1]) for i in range(window-1, len(train_data))])
+            ax.plot(roll_x, roll, color="tab:blue", linewidth=2.0, label="Training mean")
+            ax.fill_between(roll_x, roll - roll_std, roll + roll_std, alpha=0.2, color="tab:blue")
+
             v_mean = np.mean(val_data)
             v_std  = np.std(val_data)
-            ax.axhline(v_mean, color="tab:green", linewidth=2.0,
-                       linestyle="--", label=f"Validation mean ({v_mean:.2f})")
-            ax.axhspan(v_mean - v_std, v_mean + v_std,
-                       alpha=0.15, color="tab:green", label="Validation ±1 std")
+            ax.axhline(v_mean, color="tab:green", linewidth=2.0, linestyle="--",
+                       label=f"Validation mean ({v_mean:.2f})")
+            ax.axhspan(v_mean - v_std, v_mean + v_std, alpha=0.15, color="tab:green")
 
             ax.legend(fontsize=7, framealpha=0.2)
-            RLMetrics._style(ax, title, "Episode", ylabel)
-
+            RLMetrics._style(ax, title, "Episode", title)
             if fixed_ylim:
                 ax.set_ylim(-0.05, 1.05)
             else:
@@ -299,152 +292,40 @@ class RLMetrics:
         plt.tight_layout()
         if save_path:
             os.makedirs(save_path, exist_ok=True)
-            path = os.path.join(save_path, "train_vs_validation.png")
-            fig.savefig(path, dpi=300)
-            print(f"Figure saved -> {path}")
+            fig.savefig(os.path.join(save_path, "train_vs_validation.png"), dpi=300)
+            print(f"Figure saved -> {os.path.join(save_path, 'train_vs_validation.png')}")
         plt.show()
 
-    # ── Plot 3: Box plot training vs validation ───────────────────────────
+    # ── Plot 4: Boxplot ────────────────────────────────────────────────
 
     @staticmethod
-    def plot_boxplot(
-        train_metrics,
-        val_metrics,
-        save_path: str = "results/figures/",
-    ) -> None:
-        """
-        Box plot comparing training vs validation final policy.
-        Matches slides 'Example RL: Comparing final policy' layout.
-        """
+    def plot_boxplot(train_metrics, val_metrics, save_path="results/figures/"):
         fig, axes = plt.subplots(1, 3, figsize=(14, 6))
-        fig.suptitle(
-            "Training vs Validation — Final Policy Comparison",
-            fontsize=13, fontweight="bold"
-        )
+        fig.suptitle("Training vs Validation — Final Policy", fontsize=13, fontweight="bold")
 
-        # use only last 20 training episodes (converged policy)
-        n_converged = min(20, len(train_metrics.episode_rewards))
-
+        n = min(20, len(train_metrics.episode_rewards))
         pairs = [
-            (
-                train_metrics.episode_rewards[-n_converged:],
-                val_metrics.episode_rewards,
-                "Total Reward"
-            ),
-            (
-                train_metrics.episode_speeds[-n_converged:],
-                val_metrics.episode_speeds,
-                "Mean Speed"
-            ),
-            (
-                train_metrics.episode_collisions[-n_converged:],
-                val_metrics.episode_collisions,
-                "Collision Rate"
-            ),
+            (train_metrics.episode_rewards[-n:],    val_metrics.episode_rewards,    "Total Reward"),
+            (train_metrics.episode_food[-n:],        val_metrics.episode_food,        "Food Collected"),
+            (train_metrics.episode_collisions[-n:],  val_metrics.episode_collisions,  "Collision Rate"),
         ]
 
         for ax, (train_data, val_data, title) in zip(axes, pairs):
             bp = ax.boxplot(
                 [train_data, val_data],
-                labels=["Training\n(last 20 ep)", "Validation\n(5 runs)"],
+                labels=["Training\n(last 20)", "Validation\n(5 runs)"],
                 patch_artist=True,
                 medianprops=dict(color="black", linewidth=2),
-                flierprops=dict(marker="o", markersize=4, alpha=0.5),
                 widths=0.5,
             )
-            bp["boxes"][0].set_facecolor("#2d6a4f")
-            bp["boxes"][0].set_alpha(0.7)
-            bp["boxes"][1].set_facecolor("#e63946")
-            bp["boxes"][1].set_alpha(0.7)
-
-            # mean dot
-            for i, data in enumerate([train_data, val_data], 1):
-                ax.plot(i, np.mean(data), "o",
-                        color="yellow", markersize=7,
-                        zorder=5, label="Mean" if i == 1 else "")
-
-            ax.legend(fontsize=7, framealpha=0.2)
+            bp["boxes"][0].set_facecolor("#2d6a4f"); bp["boxes"][0].set_alpha(0.7)
+            bp["boxes"][1].set_facecolor("#e63946"); bp["boxes"][1].set_alpha(0.7)
+            for i, d in enumerate([train_data, val_data], 1):
+                ax.plot(i, np.mean(d), "o", color="yellow", markersize=7, zorder=5)
             RLMetrics._style(ax, title, "", title)
 
         plt.tight_layout()
         if save_path:
             os.makedirs(save_path, exist_ok=True)
-            path = os.path.join(save_path, "boxplot_train_vs_val.png")
-            fig.savefig(path, dpi=300)
-            print(f"Figure saved -> {path}")
-        plt.show()
-
-    # ── Plot 4: Vision features during validation ─────────────────────────
-
-    def plot_vision_validation(self, save_path: str = "results/figures/") -> None:
-        """
-        5-panel plot of per-episode vision feature means across validation runs:
-            Object Detection Rate | Object Horizontal Offset | Object Size
-            Wall Detection Rate   | Wall Coverage Fraction
-        """
-        if not self.episode_obj_visible:
-            print("No vision data recorded — pass vision_feats to record_step.")
-            return
-
-        runs = np.arange(1, len(self.episode_obj_visible) + 1)
-
-        fig, axes = plt.subplots(1, 5, figsize=(20, 4))
-        fig.suptitle(
-            f"Vision Features — {self.label} ({len(runs)} runs)",
-            fontsize=13, fontweight="bold"
-        )
-
-        configs = [
-            (axes[0], self.episode_obj_visible,  "Object Detection Rate",      "Rate (0–1)",   True),
-            (axes[1], self.episode_obj_dx,        "Object Horiz. Offset (dx)",  "dx (−1 … +1)", False),
-            (axes[2], self.episode_obj_size,      "Object Size (rel. area)",    "Size (0–1)",   True),
-            (axes[3], self.episode_wall_visible,  "Wall Detection Rate",        "Rate (0–1)",   True),
-            (axes[4], self.episode_wall_frac,     "Wall Coverage Fraction",     "Fraction (0–1)", True),
-        ]
-
-        colors = ["tab:orange", "tab:purple", "tab:red", "tab:brown", "tab:olive"]
-
-        for (ax, data, title, ylabel, fixed_ylim), color in zip(configs, colors):
-            data = np.array(data)
-            mean = np.mean(data)
-
-            ax.bar(runs, data, color=color, alpha=0.6, width=0.6)
-            ax.axhline(mean, color="black", linewidth=1.5,
-                       linestyle="--", label=f"Mean: {mean:.2f}")
-            ax.legend(fontsize=7, framealpha=0.2)
-            RLMetrics._style(ax, title, "Run", ylabel)
-
-            if fixed_ylim:
-                ax.set_ylim(-0.05, 1.05)
-            else:
-                margin = max(abs(data.max()), abs(data.min())) * 0.15 + 0.05
-                ax.set_ylim(-1.0 - margin, 1.0 + margin)
-
-            ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-
-        plt.tight_layout()
-        if save_path:
-            os.makedirs(save_path, exist_ok=True)
-            path = os.path.join(save_path, f"vision_{self.label}.png")
-            fig.savefig(path, dpi=300)
-            print(f"Figure saved -> {path}")
-        plt.show()
-
-    # ── Plot 5: Epsilon decay ─────────────────────────────────────────────
-
-    @staticmethod
-    def plot_epsilon_decay(
-        metrics,
-        save_path: str = "results/figures/",
-    ) -> None:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(metrics.epsilon_history, linewidth=1.2, color="coral")
-        ax.set_ylim(0, 1.05)
-        RLMetrics._style(ax, "Epsilon Decay (exploration rate)", "Step", "Epsilon")
-        plt.tight_layout()
-        if save_path:
-            os.makedirs(save_path, exist_ok=True)
-            path = os.path.join(save_path, "epsilon_decay.png")
-            fig.savefig(path, dpi=300)
-            print(f"Figure saved -> {path}")
+            fig.savefig(os.path.join(save_path, "boxplot_train_vs_val.png"), dpi=300)
         plt.show()
