@@ -10,15 +10,23 @@ WALL_WIDTH_FRAC = 0.75       # blob wider than this fraction of frame width -> w
 TOP_TOUCH_MARGIN_PX = 5      # how close to the top row counts as "touching"
 BOTTOM_TOUCH_MARGIN = 0.85   # blob bottom reacher this fraction of frame  height
 WALL_ASPECT_RATIO = 4.0      # width/height > this > wall-like strip
+ROI_TOP_FRAC = 0.4           # only analyse the bottom 60% of the frame
 
 def _green_mask(frame_bgr: np.ndarray) -> np.ndarray:
+    h, w = frame_bgr.shape[:2]
+    roi_top = int(h * ROI_TOP_FRAC)
+    frame_bgr = frame_bgr[roi_top:, :]  # crop to lower portion only
+    
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, GREEN_LOWER, GREEN_UPPER)
-    # Clean up small noise / fill small holes
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    return mask
+
+    # Pad back to full frame size so coordinates stay consistent
+    full_mask = np.zeros((h, w), dtype=np.uint8)
+    full_mask[roi_top:, :] = mask
+    return full_mask
 
 
 def analyse_frame(frame_bgr: np.ndarray) -> dict:
@@ -70,16 +78,19 @@ def analyse_frame(frame_bgr: np.ndarray) -> dict:
             if best_object is None or area > best_object[0]:
                 M  = cv2.moments(c)
                 cx = M["m10"] / M["m00"] if M["m00"] != 0 else x + bw / 2
-                best_object = (area, cx, y, x, y, bw, bh)
+                cy = M["m01"] / M["m00"] if M["m00"] != 0 else y + bh / 2
+                best_object = (area, cx, cy, x, y, bw, bh)
 
     if best_object is not None:
         area, cx, *_ = best_object
         object_visible = True
-        object_dx = float((cx - w / 2.0) / (w / 2.0))   # -1..1
+        object_dx = float((cx - w / 2.0) / (w / 2.0))     # -1..1
+        object_dy = float((cy - h / 2.0) / (h / 2.0))     # -1..1
         object_size = float(area / frame_area)            # 0..1
     else:
         object_visible = False
         object_dx = 0.0
+        object_dy = 0.0
         object_size = 0.0
 
     if best_wall is not None:
@@ -92,6 +103,7 @@ def analyse_frame(frame_bgr: np.ndarray) -> dict:
     return {
         "object_visible": object_visible,
         "object_dx": object_dx,
+        "object_dy": object_dy,
         "object_size": object_size,
         "wall_visible": wall_visible,
         "wall_frac": wall_frac,
@@ -102,7 +114,7 @@ def analyse_frame(frame_bgr: np.ndarray) -> dict:
 # Thresholds for the IR × green decision matrix
 # ------------------------------------------------------------------
 IR_HIGH_FRAC      = 0.5   # normalised front-IR median above this → "high IR"
-GREEN_HIGH_FRAC   = 0.3  # green pixel fraction of frame above this → "high green"
+GREEN_HIGH_FRAC   = 0.1  # green pixel fraction of frame above this → "high green"
 
 
 def _green_score(frame_bgr: np.ndarray) -> float:

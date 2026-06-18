@@ -14,6 +14,10 @@ from .constants_sac import (
     OBJECT_APPROACH_BONUS,
     SIZE_APPROACH_MIN_DELTA,
     IR_APPROACH_MIN_DELTA,
+    W_OBJECT_IDLE_PENALTY,
+    W_ACTION_SMOOTHNESS,
+    MIN_TILT_ANGLE,
+    MAX_TILT_ANGLE,
 )
 from .vision import classify_collision, analyse_frame
 
@@ -23,10 +27,12 @@ def compute_reward(
     right_speed: float,
     irs: list,
     prev_irs: list,
-    odom_map,           # OdometryMap instance
-    sim_position=None,  # simulation Position object, or None
-    frame=None,         # camera frame (np.ndarray BGR) or None
-    prev_frame=None,    # previous step's camera frame, for approach detection
+    odom_map,                   # OdometryMap instance
+    sim_position=None,          # simulation Position object, or None
+    frame=None,                 # camera frame (np.ndarray BGR) or None
+    prev_frame=None,            # previous step's camera frame, for approach detection
+    tilt_angle: float = 0.0,
+    prev_tilt_angle: float = 0.0,
 ) -> tuple:
     """
     Compute the reward for one SAC step and advance the odometry map.
@@ -124,19 +130,31 @@ def compute_reward(
         if feats["object_visible"]:
             # Reward for facing the object: 1.0 when centred, 0.0 at the edge
             centering = 1.0 - abs(feats["object_dx"])
-            object_reward = W_OBJECT_APPROACH * centering * feats["object_size"]
+            object_reward = W_OBJECT_APPROACH * centering * feats["object_size"] * s_trans
 
-            # Bonus for being well-centred (actively steering toward it)
-            if abs(feats["object_dx"]) < 0.2:
-                object_reward += OBJECT_CENTERING_BONUS
+            if s_trans < 0.2:
+                object_reward -= W_OBJECT_IDLE_PENALTY
+
+            # # Bonus for being well-centred (actively steering toward it)
+            # if abs(feats["object_dx"]) < 0.2:
+            #     object_reward += OBJECT_CENTERING_BONUS
+
+            # # Bonus for tilting toward the object vertically
+            # vertical_centering = 1.0 - abs(feats["object_dy"])
+            # object_reward += 0.1 * vertical_centering
 
             # Bonus when the object grew since the last frame (robot closing in)
             if prev_frame is not None:
                 prev_feats = analyse_frame(prev_frame)
 
-                
-                if prev_feats["object_visible"] and feats["object_size"] - prev_feats["object_size"] > SIZE_APPROACH_MIN_DELTA:
-                    object_reward += OBJECT_APPROACH_BONUS
+                if prev_feats["object_visible"]:
+                    size_delta = feats["object_size"] - prev_feats["object_size"]
+                    if size_delta > 0:
+                        object_reward += OBJECT_APPROACH_BONUS * (size_delta / feats["object_size"])
+                        
+    tilt_range = MAX_TILT_ANGLE - MIN_TILT_ANGLE
+    tilt_delta = abs(tilt_angle - prev_tilt_angle) / tilt_range  # normalised 0..1
+    tilt_smoothness_penalty = -W_ACTION_SMOOTHNESS * tilt_delta
 
     # 7. Odometry map update + exploration bonus
     #    OdometryMap.update() returns True when a new cell is entered.
@@ -163,6 +181,7 @@ def compute_reward(
         + ir_object_reward
         + exploration
         + collision_reward
+        + tilt_smoothness_penalty
     )
 
     return reward, new_cell, collision, collision_type
