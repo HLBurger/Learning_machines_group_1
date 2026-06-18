@@ -93,3 +93,30 @@ def vision_features(frame_bgr: np.ndarray, hardware: bool = False) -> np.ndarray
 def no_vision() -> np.ndarray:
     """Zero vision features when camera unavailable."""
     return np.zeros(3, dtype=np.float32)
+
+
+def classify_collision(
+    frame_bgr,
+    irs_front: list,
+    ir_collision_threshold: float,
+) -> str:
+    """
+    Return "wall", "object", or "none" based on IR + camera.
+
+    Logic:
+      - High IR + green blob visible → object (food)
+      - High IR + no green          → wall
+      - Low IR                      → none
+    """
+    if frame_bgr is None:
+        front_max = max(irs_front) if irs_front else 0
+        return "wall" if front_max > ir_collision_threshold else "none"
+
+    front_max = max(irs_front) if irs_front else 0
+    high_ir   = front_max > ir_collision_threshold
+
+    if not high_ir:
+        return "none"
+
+    feats = analyse_frame(frame_bgr)
+    return "object" if feats["obj_visible"] else "wall"

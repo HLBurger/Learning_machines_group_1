@@ -1,15 +1,14 @@
-import copy
 from pathlib import Path
 import numpy as np
 
 from robobo_interface import IRobobo, SimulationRobobo, HardwareRobobo
 
 from .constants_sac import (
-    N_EPISODES, MAX_STEPS, FRONT_INDICES, ACTION_DURATION_MS,
+    N_EPISODES, MAX_STEPS, LEARNING_STARTS, UPDATES_PER_STEP,
 )
 from .sac import SAC_RL
-from .vision import analyse_frame, vision_features, no_vision
-from .reward_sac import compute_reward, front_blocked
+from .vision import analyse_frame, vision_features
+from .reward_sac import compute_reward
 from .visualize_metrics import RLMetrics
 
 RESULTS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / "results"
@@ -42,13 +41,17 @@ def run_episode(
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
 
-    use_sim           = isinstance(rob, SimulationRobobo)
-    visited_cells     = set()
-    total_reward      = 0.0
-    food_collected    = 0
-    prev_food         = 0
-    steps_since_food  = 0
-    last_action       = np.zeros(2, dtype=np.float32)
+    use_sim             = isinstance(rob, SimulationRobobo)
+    visited_cells       = set()
+    total_reward        = 0.0
+    food_collected      = 0
+    prev_food           = 0
+    steps_since_food    = 0
+    last_action         = np.zeros(2, dtype=np.float32)
+    consecutive_collisions = 0
+
+    # Tilt camera to see both standing and flat packages
+    rob.set_phone_tilt_blocking(85, 50)
 
     irs       = rob.read_irs()
     try:
@@ -56,7 +59,6 @@ def run_episode(
         vis = analyse_frame(img, hardware=hardware)
     except Exception:
         vis = {"obj_visible": False, "obj_dx": 0.0, "obj_size": 0.0}
-    prev_vis = vis.copy()
 
     for step in range(MAX_STEPS):
 
@@ -117,11 +119,13 @@ def run_episode(
             steps_since_food=steps_since_food,
             position=position,
             visited_cells=visited_cells,
+            frame=next_img,
         )
         total_reward += reward
 
-        # 8. Done — terminate on collision so bad states don't pollute the buffer
-        done = collision
+        # 8. Done — require 3 consecutive collision steps to avoid terminating on a single IR spike
+        consecutive_collisions = (consecutive_collisions + 1) if collision else 0
+        done = (consecutive_collisions >= 3) and (agent.total_steps > LEARNING_STARTS)
 
         # 9. Store & update
         if training:
@@ -136,7 +140,8 @@ def run_episode(
                 last_action=last_action,
                 next_last_action=raw_action,
             )
-            agent.update()
+            for _ in range(UPDATES_PER_STEP):
+                agent.update()
 
         # 10. Log
         s_trans = max((left + right) / (2.0 * 25.0), 0.0)
@@ -155,9 +160,7 @@ def run_episode(
 
         # 11. Shift
         prev_food   = food_collected
-        prev_vis    = next_vis
         vis         = next_vis
-        vis_arr_old = vis_arr
         irs         = next_irs
         last_action = raw_action
 

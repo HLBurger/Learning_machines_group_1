@@ -28,12 +28,15 @@ from .constants_sac import (
     W_SPEED_WALL,
     NOT_VISIBLE_PENALTY,
     W_PROXIMITY,
+    W_STUCK_PENALTY,
+    STUCK_SPEED_THRESHOLD,
     GRID_SIZE,
     EXPLORATION_BONUS,
     URGENCY_PENALTY,
     MAX_URGENCY_STEPS,
     COLLISION_PENALTY,
 )
+from .vision import classify_collision
 
 
 def compute_reward(
@@ -48,6 +51,7 @@ def compute_reward(
     steps_since_food: int,
     position,
     visited_cells: set,
+    frame=None,
 ) -> tuple:
     """
     Compute Task 2 reward for one SAC step.
@@ -80,6 +84,12 @@ def compute_reward(
     # normalised front IR [0, 1]
     front_ir_norm = max(irs[i] for i in FRONT_INDICES) / 255.0
 
+    # classify what's in front: "wall", "object", or "none"
+    front_vals = [irs[i] for i in FRONT_INDICES]
+    contact_type = classify_collision(frame, front_vals, IR_COLLISION_THRESHOLD) if frame is not None else (
+        "wall" if max(front_vals) > IR_COLLISION_THRESHOLD else "none"
+    )
+
     # ── 1. Food touch ─────────────────────────────────────────────────
     food_touched = food_collected > prev_food_collected
     if food_touched:
@@ -100,37 +110,40 @@ def compute_reward(
         # gating by forward was preventing the robot from learning to turn toward food
         centering  = W_CENTERING * (1.0 - abs(obj_dx))
 
-        # approach: static size (closeness) + size growth (moving closer)
+        # approach: static size (closeness) + normalized growth (fires equally at all distances)
         size_delta = max(obj_size - prev_size, 0.0)
-        approach   = W_APPROACH_STATIC * obj_size + W_APPROACH_DELTA * size_delta
+        norm_delta = size_delta / obj_size if obj_size > 0 else 0.0
+        approach   = W_APPROACH_STATIC * obj_size + W_APPROACH_DELTA * norm_delta
 
         not_visible = 0.0
     else:
         centering   = 0.0
         approach    = 0.0
-        # penalty for losing food from view (prevents parking-and-staring)
-        not_visible = NOT_VISIBLE_PENALTY
+        # penalty grows with time since last food — stronger pressure to keep searching
+        search_urgency = min(steps_since_food / MAX_URGENCY_STEPS, 1.0)
+        not_visible = NOT_VISIBLE_PENALTY * (1.0 + search_urgency)
 
     # ── 3. Speed regulation ───────────────────────────────────────────
-    if not obj_visible:
-        # reward moving fast when searching (no food in view)
-        speed_reward = W_SPEED_SEARCH * forward
-    else:
-        speed_reward = 0.0
+    # always reward forward motion — searching fast OR approaching fast
+    speed_reward = W_SPEED_SEARCH * forward
 
     # penalise moving fast near walls regardless of food visibility
     speed_wall_penalty = -W_SPEED_WALL * forward * front_ir_norm
 
-    # ── 4. Wall proximity penalty — proportional ──────────────────────
-    wall_penalty = -W_PROXIMITY * front_ir_norm
+    # ── 4. Wall proximity penalty — only when facing a wall, not food ──
+    wall_penalty = -W_PROXIMITY * front_ir_norm if contact_type != "object" else 0.0
 
     # ── 5. Collision ──────────────────────────────────────────────────
-    # walls are white so IR high = wall collision, not food
+    # wall collision = bad; object contact = food, already rewarded above
     n_triggered  = sum(1 for i in FRONT_INDICES if irs[i] > IR_COLLISION_THRESHOLD)
-    collision    = n_triggered >= 2
-    coll_penalty = COLLISION_PENALTY * (n_triggered / len(FRONT_INDICES))
+    collision    = contact_type == "wall" and n_triggered >= 2
+    coll_penalty = COLLISION_PENALTY if collision else 0.0
 
-    # ── 6. Exploration when no food visible ───────────────────────────
+    # ── 6. Anti-stuck: penalise near-zero net speed ───────────────────
+    net_speed = abs(left_speed + right_speed) / 2.0
+    stuck_penalty = W_STUCK_PENALTY if net_speed < STUCK_SPEED_THRESHOLD else 0.0
+
+    # ── 7. Exploration when no food visible ───────────────────────────
     exploration = 0.0
     if not obj_visible and position is not None:
         cell = (int(position.x / GRID_SIZE), int(position.y / GRID_SIZE))
@@ -138,11 +151,11 @@ def compute_reward(
             exploration = EXPLORATION_BONUS
             visited_cells = visited_cells | {cell}
 
-    # ── 7. Urgency ────────────────────────────────────────────────────
+    # ── 8. Urgency ────────────────────────────────────────────────────
     capped_steps = min(steps_since_food, MAX_URGENCY_STEPS)
     urgency      = URGENCY_PENALTY * capped_steps
 
-    # ── 8. Combine ────────────────────────────────────────────────────
+    # ── 9. Combine ────────────────────────────────────────────────────
     reward = (
         touch_reward
       + centering
@@ -152,6 +165,7 @@ def compute_reward(
       + speed_wall_penalty
       + wall_penalty
       + coll_penalty
+      + stuck_penalty
       + exploration
       + urgency
     )
@@ -168,6 +182,7 @@ def compute_reward(
         "speed_wall_penalty": speed_wall_penalty,
         "wall"              : wall_penalty,
         "collision"         : coll_penalty,
+        "stuck"             : stuck_penalty,
         "exploration"       : exploration,
         "urgency"           : urgency,
         "obj_visible"       : obj_visible,
