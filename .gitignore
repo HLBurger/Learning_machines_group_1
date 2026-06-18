@@ -185,3 +185,5 @@ CoppeliaSim.tar.xz
 
 # macOS stuff
 .DS_Store
+
+results/
