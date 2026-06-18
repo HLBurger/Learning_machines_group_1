@@ -87,9 +87,10 @@ def run_episode(
             evaluate=not training,
         )
 
-        left, right, duration = motor_command
+        left, right, duration, tilt_angle, tilt_speed = motor_command
 
         # 3. Execute ───────────────────────────────────────────────────
+        rob.set_phone_tilt_blocking(tilt_angle, tilt_speed)
         rob.move_blocking(left, right, duration)
 
         # 4. Observe next IR state ─────────────────────────────────────
@@ -109,11 +110,10 @@ def run_episode(
             odom_map=odom_map,
             sim_position=sim_position,
             frame=img,
-            prev_frame=prev_img,
+            prev_frame=prev_img
         )
 
         total_reward += reward
-        print(f"collision_type: {collision_type}")
         if new_cell:
             metrics.record_new_cell()
 
@@ -166,6 +166,7 @@ def run_episode(
             "left": float(left),
             "right": float(right),
             "duration": int(duration),
+            "tilt": float(tilt_angle),
         }
 
         metrics.record_step(

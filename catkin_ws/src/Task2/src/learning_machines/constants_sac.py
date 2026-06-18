@@ -47,17 +47,21 @@ VISION_DIM    = 5                                      # object_visible, object_
 STATE_DIM     = IR_STATE_DIM + POSE_DIM + MAP_OBS_DIM + VISION_DIM  # 8 + 4 + 25 + 5 = 42
 
 IR_MAX_VALUE = 400
-IR_COLLISION_THRESHOLD = 120
+IR_COLLISION_THRESHOLD = 80
 IR_NEAR_THRESHOLD = 60
 
 
 # ─────────────────────────────────────────────
 # Continuous action space
 # ─────────────────────────────────────────────
-ACTION_DIM = 2
+ACTION_DIM = 3
 
 ACTION_LOW = -1.0
 ACTION_HIGH = 1.0
+
+MIN_TILT_ANGLE = 50
+MAX_TILT_ANGLE = 80
+TILT_SPEED = 50.0
 
 MIN_WHEEL_SPEED = -25.0
 MAX_WHEEL_SPEED = 25.0
@@ -126,17 +130,17 @@ EXPLORATION_BONUS = 0.4
 AVOIDANCE_BONUS = 0.3
 COLLISION_PENALTY = -1.0
 
-W_OBJECT_APPROACH = 0.5    # scales reward for facing + being close to a food object
+W_OBJECT_APPROACH = 0.3    # scales reward for facing + being close to a food object
 OBJECT_CENTERING_BONUS = 0.1  # extra reward when object is well-centred (|dx| < 0.2)
-OBJECT_APPROACH_BONUS = 0.7   # bonus when object is growing larger (robot closing in)
-
+OBJECT_APPROACH_BONUS = 0.6   # bonus when object is growing larger (robot closing in)
+W_OBJECT_IDLE_PENALTY = 0.3   
 
 # ─────────────────────────────────────────────
 # Safety limits
 # ─────────────────────────────────────────────
 MAX_ABS_WHEEL_SPEED = 25.0
 MAX_SPEED_CHANGE_PER_STEP = 10.0
-SIZE_APPROACH_MIN_DELTA = 0.01 # prevents jittery behavior from the approach exploit
+SIZE_APPROACH_MIN_DELTA = 0.1 # prevents jittery behavior from the approach exploit
 IR_APPROACH_MIN_DELTA = 0.05 # Same, but for IR changes
 
 STOP_ON_COLLISION = True

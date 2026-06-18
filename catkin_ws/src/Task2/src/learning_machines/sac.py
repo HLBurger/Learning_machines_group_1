@@ -26,6 +26,9 @@ from .constants_sac import (
     MIN_WHEEL_SPEED,
     MAX_WHEEL_SPEED,
     ACTION_DURATION_MS,
+    MIN_TILT_ANGLE,
+    MAX_TILT_ANGLE,
+    TILT_SPEED,
 
     GAMMA,
     TAU,
@@ -271,27 +274,30 @@ class SAC_RL:
 
         return state
 
-    def scale_action_to_motor_speeds(self, action):
-
+    def scale_action(self, action):
         """
-        Convert SAC action from [-1, 1] to motor speeds.
+        Convert SAC action from [-1, 1]^3 to motor speeds + tilt angle.
 
-        Example:
-            -1 -> MIN_WHEEL_SPEED
-             0 -> 0
-            +1 -> MAX_WHEEL_SPEED
+        action[0] -> left wheel  speed  (MIN_WHEEL_SPEED … MAX_WHEEL_SPEED)
+        action[1] -> right wheel speed  (MIN_WHEEL_SPEED … MAX_WHEEL_SPEED)
+        action[2] -> phone tilt angle   (MIN_TILT_ANGLE  … MAX_TILT_ANGLE)
         """
+        action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
 
-        action = np.asarray(action, dtype=np.float32)
-        action = np.clip(action, -1.0, 1.0)
-        motor_speeds = MIN_WHEEL_SPEED + (
-            (action + 1.0) * 0.5 * (MAX_WHEEL_SPEED - MIN_WHEEL_SPEED)
+        # Wheels — same as before
+        wheel_speeds = MIN_WHEEL_SPEED + (
+            (action[:2] + 1.0) * 0.5 * (MAX_WHEEL_SPEED - MIN_WHEEL_SPEED)
         )
+        left_speed  = float(wheel_speeds[0])
+        right_speed = float(wheel_speeds[1])
 
-        left_speed = float(motor_speeds[0])
-        right_speed = float(motor_speeds[1])
+        # Tilt — map [-1, 1] -> [MIN_TILT_ANGLE, MAX_TILT_ANGLE]
+        tilt_angle = MIN_TILT_ANGLE + (
+            (action[2] + 1.0) * 0.5 * (MAX_TILT_ANGLE - MIN_TILT_ANGLE)
+        )
+        tilt_angle = float(tilt_angle)
 
-        return left_speed, right_speed, ACTION_DURATION_MS
+        return left_speed, right_speed, ACTION_DURATION_MS, tilt_angle, TILT_SPEED
 
     def select_action(self, ir_values, pose=None, local_map=None, vision_feats=None, evaluate=False):
 
@@ -329,7 +335,7 @@ class SAC_RL:
 
         action = action_tensor.cpu().numpy()[0]
 
-        return self.scale_action_to_motor_speeds(action), action
+        return self.scale_action(action), action
 
     def store_transition(self, state_ir, action, reward, next_state_ir, done,
                          pose=None, next_pose=None,
