@@ -54,8 +54,8 @@ BATCH_SIZE         = 256
 REPLAY_BUFFER_SIZE = 100_000
 LEARNING_STARTS    = 1000    # ~5 episodes of random exploration before learning
 UPDATES_PER_STEP   = 4     # more gradient steps per env step = faster learning
-N_EPISODES         = 200
-MAX_STEPS          = 200     # ~60s per episode at 300ms/step
+N_EPISODES         = 60
+MAX_STEPS          = 600     # 3 min per episode at 300ms/step (matches real competition)
 
 # ─────────────────────────────────────────────
 # Entropy / exploration
