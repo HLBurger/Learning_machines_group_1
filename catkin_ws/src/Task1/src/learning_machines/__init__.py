@@ -1,3 +1,3 @@
-from .train_rl import train, validate
+from .train_sac import train, validate
 
 __all__ = ("train", "validate")

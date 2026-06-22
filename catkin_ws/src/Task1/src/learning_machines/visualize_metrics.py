@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 from pathlib import Path
-from .constants import FRONT_INDICES, IR_THRESHOLD
+from .constants import FRONT_INDICES
 
 
 class RLMetrics:
