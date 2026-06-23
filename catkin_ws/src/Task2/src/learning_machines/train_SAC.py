@@ -1,5 +1,6 @@
 from pathlib import Path
 import numpy as np
+import cv2
 
 from robobo_interface import IRobobo, SimulationRobobo, HardwareRobobo
 
@@ -28,48 +29,75 @@ def run_episode(
     hardware: bool = False,
 ) -> tuple:
     """
-    Run one SAC episode for Task 2 foraging.
+    Run one SAC episode for Task 3 pushing.
 
-    State: [IR (8)] + [vision (3)] + [last_action (2)] = 13 dims
-    No odometry map — walls are white, food is green, no classification needed.
+    The robot must locate a bright red object, push it using its front
+    grabber, and drive it into a green goal area.
+
+    State: [IR (8)] + [vision (6)] + [last_action (2)] = 16 dims
+
+    Vision features (6):
+        red_visible, red_dx, red_size,
+        goal_visible, goal_dx, goal_size
+
+    Episode terminates on:
+        - goal_reached: red object centre pixel is inside the green goal mask
+        - 3 consecutive wall collision steps after LEARNING_STARTS
+        - MAX_STEPS reached
 
     Returns
     -------
-    total_reward  : float
-    food_count    : int — packages collected this episode
+    total_reward : float
+    successes    : int — 1 if goal reached this episode, else 0
     """
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
 
-    use_sim             = isinstance(rob, SimulationRobobo)
-    visited_cells       = set()
-    total_reward        = 0.0
-    food_collected      = 0
-    prev_food           = 0
-    steps_since_food    = 0
-    last_action         = np.zeros(2, dtype=np.float32)
+        # Set simulation speed to 4x
+        # rob._sim.setInt32Param(rob._sim.intparam_speedmodifier, 4)
+
+    use_sim              = isinstance(rob, SimulationRobobo)
+    visited_cells        = set()
+    total_reward         = 0.0
+    steps_since_contact  = 0
+    last_action          = np.zeros(2, dtype=np.float32)
     consecutive_collisions = 0
 
-    # Tilt camera to see both standing and flat packages
-    rob.set_phone_tilt_blocking(85, 50)
+    # Tilt camera downward to keep the red object and ground-level goal in frame.
+    rob.set_phone_tilt_blocking(220, 50)
 
-    irs       = rob.read_irs()
+    irs = rob.read_irs()
     try:
         img = rob.read_image_front()
         vis = analyse_frame(img, hardware=hardware)
     except Exception:
-        vis = {"obj_visible": False, "obj_dx": 0.0, "obj_size": 0.0}
+        vis = {
+            "red_visible": False, "red_dx": 0.0, "red_size": 0.0,
+            "goal_visible": False, "goal_dx": 0.0, "goal_size": 0.0,
+            "goal_reached": False,
+        }
 
     for step in range(MAX_STEPS):
 
-        # 1. Build vision feature vector
-        vis_arr = vision_features(
-            rob.read_image_front() if step > 0 else img,
-            hardware=hardware
-        ) if step > 0 else np.array([
-            1.0 if vis["obj_visible"] else 0.0,
-            vis["obj_dx"], vis["obj_size"]
-        ], dtype=np.float32)
+        # 1. Build vision feature vector [red_visible, red_dx, red_size,
+        #                                  goal_visible, goal_dx, goal_size]
+        if step > 0:
+            img = rob.read_image_front()
+            vis_arr = vision_features(
+                img,
+                hardware=hardware,
+            )
+            cv2.imwrite(str(FIGURES_DIR / "photo.png"), img)
+
+        else:
+            vis_arr = np.array([
+                1.0 if vis["red_visible"]  else 0.0,
+                vis["red_dx"],
+                vis["red_size"],
+                1.0 if vis["goal_visible"] else 0.0,
+                vis["goal_dx"],
+                vis["goal_size"],
+            ], dtype=np.float32)
 
         # 2. Select action
         motor_command, raw_action = agent.select_action(
@@ -86,48 +114,52 @@ def run_episode(
         # 4. Observe
         next_irs = rob.read_irs()
         try:
-            next_img  = rob.read_image_front()
-            next_vis  = analyse_frame(next_img, hardware=hardware)
+            next_img = rob.read_image_front()
+            next_vis = analyse_frame(next_img, hardware=hardware)
         except Exception:
-            next_vis  = {"obj_visible": False, "obj_dx": 0.0, "obj_size": 0.0}
+            next_vis = {
+                "red_visible": False, "red_dx": 0.0, "red_size": 0.0,
+                "goal_visible": False, "goal_dx": 0.0, "goal_size": 0.0,
+                "goal_reached": False,
+            }
 
         next_vis_arr = np.array([
-            1.0 if next_vis["obj_visible"] else 0.0,
-            next_vis["obj_dx"], next_vis["obj_size"]
+            1.0 if next_vis["red_visible"]  else 0.0,
+            next_vis["red_dx"],
+            next_vis["red_size"],
+            1.0 if next_vis["goal_visible"] else 0.0,
+            next_vis["goal_dx"],
+            next_vis["goal_size"],
         ], dtype=np.float32)
 
-        # 5. Food count (sim only)
-        if use_sim:
-            try:
-                food_collected = rob.get_nr_food_collected()
-            except Exception:
-                food_collected = prev_food
-
-        # 6. Position for exploration grid (sim only)
+        # 5. Position for exploration grid (sim only; hardware has no odometry)
         position = rob.get_position() if use_sim else None
 
-        # 7. Compute reward
-        reward, collision, steps_since_food, visited_cells, info = compute_reward(
+        # 6. Compute reward
+        reward, collision, steps_since_contact, visited_cells, info = compute_reward(
             left_speed=left,
             right_speed=right,
             irs=next_irs,
             vision=next_vis,
             prev_vision=vis,
-            food_collected=food_collected,
-            prev_food_collected=prev_food,
+            goal_reached=next_vis["goal_reached"],
             current_step=step,
-            steps_since_food=steps_since_food,
+            steps_since_contact=steps_since_contact,
             position=position,
             visited_cells=visited_cells,
-            frame=next_img,
+            frame=next_img if "next_img" in dir() else None,
         )
         total_reward += reward
 
-        # 8. Done — require 3 consecutive collision steps to avoid terminating on a single IR spike
+        # 7. Done — require 3 consecutive wall-collision steps to avoid
+        #    terminating on a single IR spike; always terminate on goal_reached.
         consecutive_collisions = (consecutive_collisions + 1) if collision else 0
-        done = (consecutive_collisions >= 3) and (agent.total_steps > LEARNING_STARTS)
+        done = (
+            next_vis["goal_reached"]
+            or (consecutive_collisions >= 3 and agent.total_steps > LEARNING_STARTS)
+        )
 
-        # 9. Store & update
+        # 8. Store transition & update
         if training:
             agent.store_transition(
                 state_ir=irs,
@@ -143,7 +175,7 @@ def run_episode(
             for _ in range(UPDATES_PER_STEP):
                 agent.update()
 
-        # 10. Log
+        # 9. Log
         s_trans = max((left + right) / (2.0 * 25.0), 0.0)
         metrics.record_step(
             action={"left": float(left), "right": float(right)},
@@ -152,14 +184,13 @@ def run_episode(
             epsilon=0.0,
             speed=s_trans,
             collision=collision,
-            avoidance=max(info["approach"], 0.0),
-            food_collected=food_collected,
-            obj_visible=next_vis["obj_visible"],
-            obj_size=next_vis["obj_size"],
+            avoidance=max(info["red_approach"], 0.0),
+            food_collected=1 if next_vis["goal_reached"] else 0,
+            obj_visible=next_vis["red_visible"],
+            obj_size=next_vis["red_size"],
         )
 
-        # 11. Shift
-        prev_food   = food_collected
+        # 10. Shift state
         vis         = next_vis
         irs         = next_irs
         last_action = raw_action
@@ -170,11 +201,12 @@ def run_episode(
     if isinstance(rob, SimulationRobobo):
         rob.stop_simulation()
 
-    return total_reward, food_collected
+    successes = 1 if next_vis["goal_reached"] else 0
+    return total_reward, successes
 
 
 def train(rob: IRobobo) -> tuple:
-    """Full SAC training loop."""
+    """Full SAC training loop for Task 3 pushing."""
     _ensure_dirs()
     agent    = SAC_RL()
     metrics  = RLMetrics(label="Training")
@@ -187,22 +219,22 @@ def train(rob: IRobobo) -> tuple:
     best_reward = float("-inf")
 
     for ep in range(N_EPISODES):
-        ep_reward, ep_food = run_episode(
+        ep_reward, ep_success = run_episode(
             rob=rob, agent=agent, metrics=metrics,
             training=True, hardware=hardware,
         )
         cells = metrics.cells_this_episode
-        metrics.end_episode(ep_reward, food_collected=ep_food)
+        metrics.end_episode(ep_reward, food_collected=ep_success)
 
         if ep >= 20 and ep_reward > best_reward:
             best_reward = ep_reward
             agent.save("sac_agent_best.pt")
-            print(f"  [ep {ep:>3}] New best: {best_reward:.2f} (food={ep_food})")
+            print(f"  [ep {ep:>3}] New best: {best_reward:.2f} (success={ep_success})")
 
         print(
             f"Episode {ep:>4}/{N_EPISODES} | "
             f"reward: {ep_reward:>7.2f} | "
-            f"food: {ep_food} | "
+            f"success: {ep_success} | "
             f"buffer: {len(agent.replay_buffer)} | "
             f"cells: {cells}"
         )
@@ -210,9 +242,9 @@ def train(rob: IRobobo) -> tuple:
     agent.save("sac_agent_final.pt")
     metrics.save_raw(str(RESULTS_DIR / "training_data_sac.json"))
     metrics.plot_training(save_path=str(FIGURES_DIR) + "/")
-    metrics.plot_food_metrics(save_path=str(FIGURES_DIR) + "/")
+    metrics.plot_push_metrics(save_path=str(FIGURES_DIR) + "/")
 
-    print(f"Training complete. Best: {best_reward:.2f}")
+    print(f"Training complete. Best reward: {best_reward:.2f}")
     return agent, metrics
 
 
@@ -231,16 +263,16 @@ def validate(
     print(f"\nValidating SAC — {n_runs} deterministic runs [{label}]")
 
     for run in range(n_runs):
-        ep_reward, ep_food = run_episode(
+        ep_reward, ep_success = run_episode(
             rob=rob, agent=agent, metrics=metrics,
             training=False, hardware=hardware,
         )
-        metrics.end_episode(ep_reward, food_collected=ep_food)
-        print(f"  Run {run + 1}/{n_runs} | reward: {ep_reward:.2f} | food: {ep_food}")
+        metrics.end_episode(ep_reward, food_collected=ep_success)
+        print(f"  Run {run + 1}/{n_runs} | reward: {ep_reward:.2f} | success: {ep_success}")
 
     metrics.save_raw(str(RESULTS_DIR / f"validation_data_sac_{label}.json"))
     metrics.plot_training(save_path=str(FIGURES_DIR) + "/")
-    metrics.plot_food_metrics(save_path=str(FIGURES_DIR) + "/")
+    metrics.plot_push_metrics(save_path=str(FIGURES_DIR) + "/")
 
     if train_metrics is not None:
         RLMetrics.plot_training_vs_validation(
