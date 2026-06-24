@@ -160,7 +160,7 @@ def run_episode(
         ], dtype=np.float32)
  
         steps_since_switch += 1
- 
+
         # ── Track sustained "red centred & close" for red -> green ────
         if (
             next_vis["red_visible"]
@@ -169,14 +169,18 @@ def run_episode(
         ):
             steps_centered_red += 1
         else:
-            steps_centered_red = 0
- 
+            steps_centered_red -= 1
+
+        steps_centered_red = max(0, min(10, steps_centered_red))
+
         # ── Track sustained "red not visible" for green -> red ────────
         if not next_vis["red_visible"]:
             steps_red_lost += 1
         else:
             steps_red_lost -= 1
- 
+
+        steps_red_lost = max(0, min(10, steps_red_lost))
+
         if (
             current_agent == "red"
             and steps_centered_red >= RED_ACQUIRED_STEPS

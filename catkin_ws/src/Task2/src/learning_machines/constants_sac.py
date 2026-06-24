@@ -149,7 +149,7 @@ MIN_GOAL_AREA_FRAC = 0.002   # minimum green goal size as fraction of frame area
 
 GOAL_REACHED_DILATE_ITERS = 3  # tune based on tile size vs. object size
 
-RED_ACQUIRED_SIZE = 0.03
+RED_ACQUIRED_SIZE = 0.02
 RED_CENTER_THRESHOLD = 0.10
 
 RED_ACQUIRED_STEPS = 10
