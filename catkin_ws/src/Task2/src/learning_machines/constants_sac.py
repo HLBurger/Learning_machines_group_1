@@ -18,7 +18,7 @@ IR_NEAR_THRESHOLD      = 60
 IR_MAX_VALUE           = 400
 
 FRONT_INDICES = [v for k, v in IR_indices.items() if k.startswith("FRONT")]
-BACK_INDICES  = [v for k, v in IR_indices.items() if k.startswith("BACK")]
+BACK_INDICES  = [v for k, v in IR_indices.items() if k.endswith("R")]
 LEFT_INDICES  = [v for k, v in IR_indices.items() if k.endswith("L")]
 RIGHT_INDICES = [v for k, v in IR_indices.items() if k.endswith("R")]
 
@@ -55,7 +55,7 @@ BATCH_SIZE         = 256
 REPLAY_BUFFER_SIZE = 100_000
 LEARNING_STARTS    = 1000    # ~5 episodes of random exploration before learning
 UPDATES_PER_STEP   = 4      # more gradient steps per env step = faster learning
-N_EPISODES         = 60
+N_EPISODES         = 200
 MAX_STEPS          = 200    # 3 min per episode at 300ms/step (matches real competition)
 
 # ─────────────────────────────────────────────
@@ -78,18 +78,26 @@ LOG_STD_MAX = 2
 # Red object = push target; green area = goal.
 # Robot must align with the red object, push it forward, and
 # drive it into the green goal area.
+#
+# Weighting philosophy: the two real objectives are (1) reach the red
+# object and (2) push it into the green goal. Those terms — and the
+# terminal success reward — should dominate. Everything else here
+# (speed regulation, exploration, wall proximity, anti-stuck) is
+# scaffolding that exists to make the two objectives achievable; it is
+# sized below the task terms so it nudges behaviour without competing
+# with it for the agent's attention.
 # ─────────────────────────────────────────────
 
 # Success
 OBJECT_IN_GOAL_REWARD = 50.0   # large terminal bonus when red centre lands inside green mask
 FAST_COMPLETION_BONUS = 15.0   # extra bonus scaled by steps remaining (faster = bigger)
 
-# Approach red object
-W_RED_CENTERING   = 0.5   # reward for keeping red object centred horizontally
-W_RED_APPROACH    = 0.5   # reward for red blob size (robot getting closer to object)
+# Approach red object (objective 1)
+W_RED_CENTERING   = 0.8   # reward for keeping red object centred horizontally
+W_RED_APPROACH    = 1.0   # reward for red blob size (robot getting closer to object) — raised above centering, since closing distance matters more than fine alignment early on
 
-# Align with goal once object is close
-W_GOAL_CENTERING  = 2.0   # reward for keeping green goal centred while pushing
+# Align with goal once object is close (objective 2)
+W_GOAL_CENTERING  = 3.0   # reward for keeping green goal centred while pushing — raised so active goal-pushing clearly outweighs scaffolding terms below
 
 # Forward push reward — fires when robot is moving forward with red object in contact
 PUSH_FORWARD_REWARD = 0.5  # reward per step of active forward pushing
@@ -97,20 +105,17 @@ PUSH_FORWARD_REWARD = 0.5  # reward per step of active forward pushing
 # Penalty when red object is lost from view during pushing phase
 RED_LOST_PENALTY  = -0.3   # small per-step penalty to keep robot seeking object
 
-# Speed regulation
-W_SPEED_SEARCH    = 1.0   # reward for moving fast when red object not visible
+W_SPEED_SEARCH    = 0.4   # reward for moving fast when red object not visible
 W_SPEED_WALL      = 0.5   # penalty coefficient for moving fast near a wall
 
-# Wall avoidance (IR-based, proportional)
-W_PROXIMITY       = 1.0   # penalty weight proportional to front IR normalised reading
+W_PROXIMITY       = 0.6   # penalty weight proportional to front IR normalised reading
 
-# Anti-stuck: penalty for near-zero net speed (oscillating or frozen)
+
 W_STUCK_PENALTY      = -0.3   # applied per step where net speed < threshold
 STUCK_SPEED_THRESHOLD = 2.0   # abs(left+right)/2 below this = stuck
 
-# Exploration when red object not visible (no odometry map)
 GRID_SIZE         = 0.2
-EXPLORATION_BONUS = 1.0   # incentive to visit new grid cells while searching
+EXPLORATION_BONUS = 0.5   # incentive to visit new grid cells while searching
 
 # Urgency — grows if no successful push event for a while
 URGENCY_PENALTY   = -0.05  # -0.05/step × 100 cap = -5 max
@@ -141,3 +146,12 @@ GREEN_UPPER_HW  = (90, 255, 255)
 
 MIN_RED_AREA_FRAC  = 0.001   # minimum red blob size as fraction of frame area
 MIN_GOAL_AREA_FRAC = 0.002   # minimum green goal size as fraction of frame area
+
+GOAL_REACHED_DILATE_ITERS = 3  # tune based on tile size vs. object size
+
+RED_ACQUIRED_SIZE = 0.03
+RED_CENTER_THRESHOLD = 0.10
+
+RED_ACQUIRED_STEPS = 10
+MIN_AGENT_STEPS = 10
+RED_LOST_STEPS = 10  # consecutive steps red must be absent before green -> red switch-back

@@ -27,6 +27,7 @@ from .constants_sac import (
     GREEN_LOWER_HW,  GREEN_UPPER_HW,
     MIN_RED_AREA_FRAC,
     MIN_GOAL_AREA_FRAC,
+    GOAL_REACHED_DILATE_ITERS
 )
 
 
@@ -52,7 +53,7 @@ def analyse_frame(
         goal_visible : bool,
         goal_dx      : float,   # [-1, 1], 0 = centred
         goal_size    : float,   # [0, 1], fraction of frame area
-        goal_reached : bool,    # red centre pixel inside green mask
+        goal_reached : bool,    # red mask overlaps (dilated) green mask
     }
     """
     if frame_bgr is None or frame_bgr.size == 0:
@@ -102,7 +103,6 @@ def analyse_frame(
     red_visible = False
     red_dx      = 0.0
     red_size    = 0.0
-    red_center  = None  # (int cx, int cy) — needed for goal_reached test
 
     contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
@@ -116,13 +116,11 @@ def analyse_frame(
                 red_visible = True
                 red_dx      = float((cx - w / 2.0) / (w / 2.0))
                 red_size    = float(min(blob_area / frame_area, 1.0))
-                red_center  = (int(cx), int(cy))
 
     # ── Detect largest green goal area ────────────────────────────────
-    goal_visible   = False
-    goal_dx        = 0.0
-    goal_size      = 0.0
-    goal_mask_full = None  # retained for goal_reached pixel test
+    goal_visible = False
+    goal_dx      = 0.0
+    goal_size    = 0.0
 
     contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
@@ -132,17 +130,19 @@ def analyse_frame(
             M = cv2.moments(c)
             if M["m00"] > 0:
                 cx = M["m10"] / M["m00"]
-                goal_visible   = True
-                goal_dx        = float((cx - w / 2.0) / (w / 2.0))
-                goal_size      = float(min(blob_area / frame_area, 1.0))
-                goal_mask_full = green_mask
+                goal_visible = True
+                goal_dx      = float((cx - w / 2.0) / (w / 2.0))
+                goal_size    = float(min(blob_area / frame_area, 1.0))
 
-    # ── Goal-reached: red object centre pixel inside green mask ───────
+    # ── Goal-reached: dilated red mask overlaps green mask ────────────
+    # Dilating the red mask lets us catch a thin green fringe/edge that's
+    # still visible around the red object even when the object is mostly
+    # or fully sitting on top of (occluding) the green tile.
     goal_reached = False
-    if red_center is not None and goal_mask_full is not None:
-        x, y = red_center
-        if 0 <= x < w and 0 <= y < h:
-            goal_reached = bool(goal_mask_full[y, x] > 0)
+    if red_visible and goal_visible:
+        red_dilated = cv2.dilate(red_mask, kernel, iterations=GOAL_REACHED_DILATE_ITERS)
+        overlap     = cv2.bitwise_and(red_dilated, green_mask)
+        goal_reached = cv2.countNonZero(overlap) > 0
 
     return {
         "red_visible"  : red_visible,

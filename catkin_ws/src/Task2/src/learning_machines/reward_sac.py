@@ -26,7 +26,6 @@ from .constants_sac import (
     MAX_WHEEL_SPEED,
     MAX_STEPS,
     W_SPEED_SEARCH,
-    W_SPEED_WALL,
     W_PROXIMITY,
     W_STUCK_PENALTY,
     STUCK_SPEED_THRESHOLD,
@@ -40,13 +39,12 @@ from .constants_sac import (
     W_RED_CENTERING,
     W_RED_APPROACH,
     W_GOAL_CENTERING,
-    RED_LOST_PENALTY,
-    PUSH_FORWARD_REWARD,
 )
 from .vision import classify_collision
-
-
+ 
+ 
 def compute_reward(
+    mode: str,
     left_speed: float,
     right_speed: float,
     irs: list,
@@ -61,7 +59,7 @@ def compute_reward(
 ) -> tuple:
     """
     Compute Task 3 pushing reward for one SAC step.
-
+ 
     Parameters
     ----------
     left_speed, right_speed : float  — wheel speeds [-25, 25]
@@ -76,7 +74,7 @@ def compute_reward(
     visited_cells           : set    — grid cells visited this episode
     frame                   : np.ndarray or None — raw BGR frame for collision
                                                    type classification
-
+ 
     Returns
     -------
     reward              : float
@@ -84,15 +82,40 @@ def compute_reward(
     steps_since_contact : int (updated)
     visited_cells       : set (updated)
     info                : dict of reward components for logging
+ 
+    Notes on simplification from the previous version
+    ---------------------------------------------------
+    - Removed `red_lost`: it duplicated `urgency` (both keyed off
+      `steps_since_contact` with a monotonic penalty). `urgency` alone
+      now carries that signal.
+    - Removed `speed_wall_penalty` and merged its intent into
+      `wall_penalty`, which now scales with forward speed itself
+      (`1 + forward`) instead of being a second, separately-weighted
+      term off the same IR signal.
+    - `speed_reward` (search-phase forward incentive) is now only
+      applied while the red object is NOT visible. Once `red_visible`
+      is True, `red_approach` already rewards closing the distance, so
+      keeping `speed_reward` unconditional was double-counting forward
+      motion and let the agent drift off-centre while still scoring
+      "speed" points.
+    - Removed `push_reward` entirely in goal mode: it rewarded raw
+      forward motion gated only by `red_size`, with no awareness of
+      `goal_dx`. That meant a robot pushing the object in a straight
+      line away from the goal scored identically to one pushing it
+      toward the goal, and it actively fought `goal_centering` whenever
+      a corrective arc was needed. `goal_centering` (already scaled by
+      `red_size`) is now the sole "push correctly" signal.
+    - Fixed a bug where `terminal_reward` was summed into the goal-mode
+      reward twice.
     """
-
+ 
     # ── Derived scalars ────────────────────────────────────────────────
     # Normalised forward motion in [0, 1]; reverse motion maps to 0.
     forward = max((left_speed + right_speed) / (2.0 * MAX_WHEEL_SPEED), 0.0)
-
+ 
     # Normalised front IR reading in [0, 1].
     front_ir_norm = max(irs[i] for i in FRONT_INDICES) / 255.0
-
+ 
     # Classify what is triggering the front IR sensors.
     front_vals   = [irs[i] for i in FRONT_INDICES]
     contact_type = (
@@ -100,24 +123,24 @@ def compute_reward(
         if frame is not None
         else ("wall" if max(front_vals) > IR_COLLISION_THRESHOLD else "none")
     )
-
+ 
     # ── Extract vision features ────────────────────────────────────────
     red_visible  = vision["red_visible"]
     red_dx       = vision["red_dx"]       # horizontal offset [-1, 1], 0 = centred
     red_size     = vision["red_size"]     # blob area / frame area [0, 1]
-
+ 
     goal_visible = vision["goal_visible"]
     goal_dx      = vision["goal_dx"]      # horizontal offset of green goal [-1, 1]
-
+ 
     # ── 1. Terminal: object successfully pushed into goal ──────────────
     if goal_reached:
-        steps_remaining   = MAX_STEPS - current_step
-        fast_bonus        = FAST_COMPLETION_BONUS * (steps_remaining / MAX_STEPS)
-        terminal_reward   = OBJECT_IN_GOAL_REWARD + fast_bonus
+        steps_remaining     = MAX_STEPS - current_step
+        fast_bonus          = FAST_COMPLETION_BONUS * (steps_remaining / MAX_STEPS)
+        terminal_reward     = OBJECT_IN_GOAL_REWARD + fast_bonus
         steps_since_contact = 0
     else:
         terminal_reward = 0.0
-
+ 
     # ── 2. Approach red object (phase 1 / ongoing) ────────────────────
     # Centering: reward for keeping red object in horizontal centre.
     # Approach: reward for blob size — larger means robot is closer.
@@ -125,92 +148,97 @@ def compute_reward(
         red_centering = W_RED_CENTERING * (1.0 - abs(red_dx))
         red_approach  = W_RED_APPROACH  * red_size
         steps_since_contact = 0
-        red_lost      = 0.0
     else:
         red_centering = 0.0
         red_approach  = 0.0
-        red_lost      = RED_LOST_PENALTY
-        # urgency grows with time since object was last visible
-        search_urgency  = min(steps_since_contact / MAX_URGENCY_STEPS, 1.0)
-        red_lost       *= (1.0 + search_urgency)
-
+ 
     # ── 3. Align with goal while pushing (phase 2) ────────────────────
     # Only fires when the robot already has the red object close
     # (red_size large) and the green goal is visible.
     # This naturally activates during the push phase without a hard threshold.
+    # This is now the sole "push correctly" signal — it rewards forward
+    # progress implicitly through red_size growing as the robot closes
+    # the gap, while keeping the goal centred (i.e. aimed) along the way.
     if goal_visible and red_visible:
         goal_centering = W_GOAL_CENTERING * (1.0 - abs(goal_dx)) * red_size
     else:
         goal_centering = 0.0
-
-    # ── 4. Forward push reward ────────────────────────────────────────
-    # Fires when robot is moving forward with red object in near-contact.
-    # red_size acts as a smooth gate: large = close = pushing.
-    push_reward = PUSH_FORWARD_REWARD * forward * red_size if red_visible else 0.0
-
-    # ── 5. Speed regulation ───────────────────────────────────────────
-    # Reward forward motion at all times (searching or pushing).
-    speed_reward = W_SPEED_SEARCH * forward
-
-    # Penalise moving fast when a wall is directly ahead.
-    speed_wall_penalty = -W_SPEED_WALL * forward * front_ir_norm
-
-    # ── 6. Wall proximity penalty ─────────────────────────────────────
-    # Applied when front IR is high and the obstacle is a wall, not the object.
-    wall_penalty = -W_PROXIMITY * front_ir_norm if contact_type != "object" else 0.0
-
-    # ── 7. Collision ──────────────────────────────────────────────────
+ 
+    # ── 4. Speed regulation ────────────────────────────────────────────
+    # Reward forward motion only while searching (red not yet visible).
+    # Once the object is visible, red_approach / goal_centering already
+    # reward the right kind of forward motion, so an unconditional speed
+    # bonus here would double-count and could mask poor centring.
+    speed_reward = W_SPEED_SEARCH * forward if not red_visible else 0.0
+ 
+    # ── 5. Wall proximity penalty ─────────────────────────────────────
+    # Applied when front IR is high and the obstacle is a wall, not the
+    # object. Scales with forward speed so that approaching a wall fast
+    # is penalised more than sitting near one — this absorbs what used
+    # to be a separate speed_wall_penalty term.
+    wall_penalty = (
+        -W_PROXIMITY * front_ir_norm * (1.0 + forward)
+        if contact_type != "object"
+        else 0.0
+    )
+ 
+    # ── 6. Collision ──────────────────────────────────────────────────
     # Wall collision only; contact with the red object is desired and
     # detected as contact_type == "object" via vision.
     n_triggered  = sum(1 for i in FRONT_INDICES if irs[i] > IR_COLLISION_THRESHOLD)
     collision    = contact_type == "wall" and n_triggered >= 2
     coll_penalty = COLLISION_PENALTY if collision else 0.0
-
-    # ── 8. Anti-stuck ─────────────────────────────────────────────────
+ 
+    # ── 7. Anti-stuck ─────────────────────────────────────────────────
     net_speed     = abs(left_speed + right_speed) / 2.0
     stuck_penalty = W_STUCK_PENALTY if net_speed < STUCK_SPEED_THRESHOLD else 0.0
-
-    # ── 9. Exploration when red object not visible ────────────────────
+ 
+    # ── 8. Exploration when red object not visible ────────────────────
     exploration = 0.0
     if not red_visible and position is not None:
         cell = (int(position.x / GRID_SIZE), int(position.y / GRID_SIZE))
         if cell not in visited_cells:
             exploration   = EXPLORATION_BONUS
             visited_cells = visited_cells | {cell}
-
-    # ── 10. Urgency ───────────────────────────────────────────────────
+ 
+    # ── 9. Urgency ─────────────────────────────────────────────────────
+    # Sole penalty for "time spent without seeing the red object" —
+    # previously duplicated by red_lost, which is now removed.
     capped_steps = min(steps_since_contact, MAX_URGENCY_STEPS)
     urgency      = URGENCY_PENALTY * capped_steps
-
-    # ── 11. Combine ───────────────────────────────────────────────────
-    reward = (
-        terminal_reward
-      + red_centering
-      + red_approach
-      + goal_centering
-      + push_reward
-      + red_lost
-      + speed_reward
-      + speed_wall_penalty
-      + wall_penalty
-      + coll_penalty
-      + stuck_penalty
-      + exploration
-      + urgency
-    )
-
+ 
+    # ── 10. Combine ────────────────────────────────────────────────────
+    if mode == "red":
+ 
+        reward = (
+              red_centering
+            + red_approach
+            + speed_reward
+            + wall_penalty
+            + coll_penalty
+            + stuck_penalty
+            + exploration
+            + urgency
+        )
+    else:
+ 
+        reward = (
+              terminal_reward
+            + goal_centering
+            + wall_penalty
+            + coll_penalty
+            + stuck_penalty
+        )
+ 
     if not red_visible:
         steps_since_contact += 1
-
+ 
     info = {
         "terminal"          : terminal_reward,
         "red_centering"     : red_centering,
         "red_approach"      : red_approach,
         "goal_centering"    : goal_centering,
-        "push_reward"       : push_reward,
-        "red_lost"          : red_lost,
         "speed_search"      : speed_reward,
-        "speed_wall_penalty": speed_wall_penalty,
         "wall"              : wall_penalty,
         "collision"         : coll_penalty,
         "stuck"             : stuck_penalty,
@@ -221,7 +249,7 @@ def compute_reward(
         "goal_visible"      : goal_visible,
         "goal_reached"      : goal_reached,
     }
-
+ 
     return reward, collision, steps_since_contact, visited_cells, info
 
 
