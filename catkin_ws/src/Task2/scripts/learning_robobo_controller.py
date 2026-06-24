@@ -65,9 +65,20 @@ if __name__ == "__main__":
 
         rob   = HardwareRobobo(camera=True)   # camera=True required for Task 2
         rob   = IntSpeedRobobo(rob)
-        agent = SAC_RL()
-        agent.load(str(RESULTS_DIR_SAC / "sac_agent_best.pt"))
-        validate_sac(rob, agent, train_metrics=None, n_runs=5, label="hw_sac")
+
+        agentred = SAC_RL()
+        model_path = RESULTS_DIR_SAC / "sac_agentred_best.pt"
+        if not model_path.exists():
+            model_path = RESULTS_DIR_SAC / "sac_agentred_final.pt"
+        agentred.load(str(model_path))
+
+        agentgreen = SAC_RL()
+        model_path = RESULTS_DIR_SAC / "sac_agentgreen_best.pt"
+        if not model_path.exists():
+            model_path = RESULTS_DIR_SAC / "sac_agentgreen_final.pt"
+        agentgreen.load(str(model_path))
+
+        validate_sac(rob, agentred, agentgreen, train_metrics=None, n_runs=5, label="hw_sac")
 
     else:
         raise ValueError(f"Unknown argument: {mode}")
