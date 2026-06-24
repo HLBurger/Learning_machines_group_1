@@ -27,7 +27,8 @@ from .constants_sac import (
     GREEN_LOWER_HW,  GREEN_UPPER_HW,
     MIN_RED_AREA_FRAC,
     MIN_GOAL_AREA_FRAC,
-    GOAL_REACHED_DILATE_ITERS
+    GOAL_REACHED_DILATE_ITERS,
+    MIN_OVERLAP_GOAL,
 )
 
 
@@ -142,7 +143,8 @@ def analyse_frame(
     if red_visible and goal_visible:
         red_dilated = cv2.dilate(red_mask, kernel, iterations=GOAL_REACHED_DILATE_ITERS)
         overlap     = cv2.bitwise_and(red_dilated, green_mask)
-        goal_reached = cv2.countNonZero(overlap) > 0
+        overlap_ratio = cv2.countNonZero(overlap) / cv2.countNonZero(green_mask)
+        goal_reached = overlap_ratio > MIN_OVERLAP_GOAL
 
     return {
         "red_visible"  : red_visible,

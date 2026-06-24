@@ -82,6 +82,7 @@ def run_episode(
     visited_cells        = set()
     total_reward         = 0.0
     steps_since_contact  = 0
+    steps_since_goal_visible = 0
     last_action          = np.zeros(2, dtype=np.float32)
     consecutive_collisions = 0
     steps_centered_red   = 0
@@ -173,6 +174,11 @@ def run_episode(
 
         steps_centered_red = max(0, min(10, steps_centered_red))
 
+        if not next_vis["goal_visible"]:
+            steps_since_goal_visible += 1
+        else:
+            steps_since_goal_visible = 0
+
         # ── Track sustained "red not visible" for green -> red ────────
         if not next_vis["red_visible"]:
             steps_red_lost += 1
@@ -190,6 +196,7 @@ def run_episode(
             agent = agentgreen
             steps_since_switch = 0
             steps_red_lost = 0
+            switch_mode = current_agent
             print("switch_to_green")
  
         elif (
@@ -201,7 +208,10 @@ def run_episode(
             agent = agentred
             steps_since_switch = 0
             steps_centered_red = 0
+            switch_mode = current_agent
             print("switch_to_red")
+        else:
+            switch_mode = None
  
         # 5. Position for exploration grid (sim only; hardware has no odometry)
         position = rob.get_position() if use_sim else None
@@ -209,6 +219,7 @@ def run_episode(
         # 6. Compute reward
         reward, collision, steps_since_contact, visited_cells, info = compute_reward(
             mode = current_agent,
+            switch_mode=switch_mode,
             left_speed=left,
             right_speed=right,
             irs=next_irs,
@@ -217,6 +228,7 @@ def run_episode(
             goal_reached=next_vis["goal_reached"],
             current_step=step,
             steps_since_contact=steps_since_contact,
+            steps_since_goal_visible=steps_since_goal_visible,
             position=position,
             visited_cells=visited_cells,
             frame=next_img if "next_img" in dir() else None,

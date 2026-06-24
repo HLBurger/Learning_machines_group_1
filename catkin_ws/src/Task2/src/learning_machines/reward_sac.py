@@ -37,14 +37,19 @@ from .constants_sac import (
     OBJECT_IN_GOAL_REWARD,
     FAST_COMPLETION_BONUS,
     W_RED_CENTERING,
+    W_RED_CLOSING,
     W_RED_APPROACH,
     W_GOAL_CENTERING,
+    SWITCH_BONUS,
+    GOAL_URGENCY_PENALTY,
+    MAX_GOAL_URGENCY_STEPS,
 )
 from .vision import classify_collision
  
  
 def compute_reward(
     mode: str,
+    switch_mode: str,
     left_speed: float,
     right_speed: float,
     irs: list,
@@ -53,6 +58,7 @@ def compute_reward(
     goal_reached: bool,
     current_step: int,
     steps_since_contact: int,
+    steps_since_goal_visible: int,
     position,
     visited_cells: set,
     frame=None,
@@ -133,13 +139,14 @@ def compute_reward(
     goal_dx      = vision["goal_dx"]      # horizontal offset of green goal [-1, 1]
  
     # ── 1. Terminal: object successfully pushed into goal ──────────────
-    if goal_reached:
+    if goal_reached and mode == "green":
         steps_remaining     = MAX_STEPS - current_step
         fast_bonus          = FAST_COMPLETION_BONUS * (steps_remaining / MAX_STEPS)
         terminal_reward     = OBJECT_IN_GOAL_REWARD + fast_bonus
         steps_since_contact = 0
     else:
         terminal_reward = 0.0
+    
  
     # ── 2. Approach red object (phase 1 / ongoing) ────────────────────
     # Centering: reward for keeping red object in horizontal centre.
@@ -147,10 +154,12 @@ def compute_reward(
     if red_visible:
         red_centering = W_RED_CENTERING * (1.0 - abs(red_dx))
         red_approach  = W_RED_APPROACH  * red_size
+        closing_speed = W_RED_CLOSING * forward
         steps_since_contact = 0
     else:
         red_centering = 0.0
         red_approach  = 0.0
+        closing_speed = 0.0
  
     # ── 3. Align with goal while pushing (phase 2) ────────────────────
     # Only fires when the robot already has the red object close
@@ -206,6 +215,18 @@ def compute_reward(
     # previously duplicated by red_lost, which is now removed.
     capped_steps = min(steps_since_contact, MAX_URGENCY_STEPS)
     urgency      = URGENCY_PENALTY * capped_steps
+
+    capped_goal_steps = min(steps_since_goal_visible, MAX_GOAL_URGENCY_STEPS)
+    goal_urgency       = GOAL_URGENCY_PENALTY * capped_goal_steps
+
+    switch_reward = 0
+    if switch_mode == "green":
+        switch_reward = SWITCH_BONUS
+
+    elif switch_mode == "red":
+        switch_reward = -SWITCH_BONUS
+
+    
  
     # ── 10. Combine ────────────────────────────────────────────────────
     if mode == "red":
@@ -214,11 +235,13 @@ def compute_reward(
               red_centering
             + red_approach
             + speed_reward
+            + closing_speed
             + wall_penalty
             + coll_penalty
             + stuck_penalty
             + exploration
             + urgency
+            + switch_reward
         )
     else:
  
@@ -228,6 +251,8 @@ def compute_reward(
             + wall_penalty
             + coll_penalty
             + stuck_penalty
+            + switch_reward
+            + goal_urgency
         )
  
     if not red_visible:
@@ -244,6 +269,7 @@ def compute_reward(
         "stuck"             : stuck_penalty,
         "exploration"       : exploration,
         "urgency"           : urgency,
+        "goal urgency"      : goal_urgency,
         "red_visible"       : red_visible,
         "red_size"          : red_size,
         "goal_visible"      : goal_visible,
